@@ -260,6 +260,9 @@ struct SpotlightLauncherView: View {
         }
         // Entering / leaving actions (⌘K) or a search tag (⇥ / ⌫) re-runs the search.
         .onChange(of: chipKey) { refresh() }
+        .onChange(of: themeStore.excludedFolderPaths) {
+            if isOpen, !dismissing { refresh() }
+        }
         .onChange(of: browse) {
             sel = 0
             filter = nil
@@ -1539,7 +1542,7 @@ struct SpotlightLauncherView: View {
     private func reloadConfig() {
         let result = ThemeStore.shared.reloadFromConfig()
         loadRetention()
-        SearchTags.reload()
+        loadDirectorySearchConfig()
         FileManagerApp.reload()
         suggestionsEnabled = RecentItems.isEnabled
         // Rebuild the app index off the main thread.
@@ -1563,6 +1566,13 @@ struct SpotlightLauncherView: View {
             return
         }
         retentionSeconds = QueryRetentionPolicy.resolveSeconds(from: ConfigFileLines.keyValues(raw))
+    }
+
+    private func loadDirectorySearchConfig() {
+        ExternalDrives.isEnabled = LauncherConfigFile.value(ExternalDrives.configKey).map {
+            !["false", "0", "no", "off"].contains($0.lowercased())
+        } ?? true
+        SearchTags.reload()
     }
 
     /// A launch mode such as `lumio apps`: open straight into that query.
@@ -1641,7 +1651,14 @@ struct SpotlightLauncherView: View {
     }
 
     /// Shows the results. Expands the panel if it isn't already.
-    private func publish(_ rows: [SpotlightItem]) {
+    private func publish(_ candidates: [SpotlightItem]) {
+        let exclusions = themeStore.excludedFolderPaths
+        let rows = exclusions.isEmpty ? candidates : candidates.filter { item in
+            guard item.kind == .folder, let target = item.target else { return true }
+            let resolved = URL(fileURLWithPath: target).resolvingSymlinksInPath().path
+            return !FileSearchPaths.isExcluded(target, by: exclusions)
+                && !FileSearchPaths.isExcluded(resolved, by: exclusions)
+        }
         // The first results after the panel opens rise in one by one (SpotlightRiseIn). Later
         // ones, while typing, swap with a short spring: rows that stay slide to their new place,
         // new rows fade in, dropped rows vanish. Swapping instantly made the list flicker.
@@ -2179,6 +2196,7 @@ struct SpotlightLauncherView: View {
             }
             // The permission worked and macOS now says no: find out whether it went stale.
             AccessibilityDoctor.shared.noticeIfLost()
+            loadDirectorySearchConfig()
             suggestionsEnabled = RecentItems.isEnabled
             // Which apps are running, for the dot on their rows.
             runningApps = Set(NSWorkspace.shared.runningApplications
