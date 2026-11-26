@@ -61,7 +61,13 @@ jobs:
       - name: Build and verify Lumio.dmg
         run: |
           ./scripts/build.sh
-          test "$(lipo -archs .build/release/Build/Products/Release/Lumio.app/Contents/MacOS/Lumio)" = arm64
+          lumio=.build/release/Build/Products/Release/Lumio.app/Contents/MacOS/Lumio
+          test "$(lipo -archs "$lumio")" = arm64
+          frameworks=$(otool -L "$lumio")
+          if grep -E '/(Translation|Vision)\.framework/' <<< "$frameworks"; then
+            echo "The executable still links an OCR or translation framework" >&2
+            exit 1
+          fi
           hdiutil verify release/Lumio.dmg
 
       - name: Check the compiled app's CLI and update settings
