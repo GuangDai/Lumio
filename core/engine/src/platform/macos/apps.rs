@@ -11,7 +11,11 @@ use std::sync::mpsc;
 /// Used when a bundle path has no readable file stem, which should not happen
 /// for a real `.app` but keeps the candidate from having an empty title.
 const FALLBACK_APP_NAME: &str = "App";
-const FINDER_BUNDLE_PATH: &str = "/System/Library/CoreServices/Finder.app";
+const ADDITIONAL_SYSTEM_APPLICATIONS: &[&str] = &[
+    "/System/Library/CoreServices/Finder.app",
+    "/System/Library/CoreServices/Time Machine.app",
+    "/System/Library/CoreServices/VoiceOver.app/Contents/Resources/VoiceOver Utility.app",
+];
 
 pub(crate) fn discover_installed_apps(config: &RuntimeConfig, tx: mpsc::SyncSender<Candidate>) {
     let mut bundles = Vec::new();
@@ -27,15 +31,18 @@ pub(crate) fn discover_installed_apps(config: &RuntimeConfig, tx: mpsc::SyncSend
             &mut bundles,
         );
     }
-    // Finder lives above the CoreServices applications directory. Add its
-    // bundle explicitly to avoid indexing unrelated system helper apps there.
-    if Path::new(FINDER_BUNDLE_PATH).is_dir()
-        && !should_exclude_path(FINDER_BUNDLE_PATH, &config.app_exclude_paths)
-        && !bundles.iter().any(|path| path == FINDER_BUNDLE_PATH)
-    {
-        bundles.push(FINDER_BUNDLE_PATH.to_owned());
+    // Some user-facing system apps live alongside CoreServices helpers or
+    // inside an app bundle. Select them individually to avoid scanning helpers.
+    for &path in ADDITIONAL_SYSTEM_APPLICATIONS {
+        if Path::new(path).is_dir() && !should_exclude_path(path, &config.app_exclude_paths) {
+            bundles.push(path.to_owned());
+        }
     }
 
+    // Utilities are a required root even with a custom shallow scan. Avoid
+    // reading the same bundle twice when its enclosing root also found it.
+    let mut seen = HashSet::new();
+    bundles.retain(|path| seen.insert(candidate_id_path_component(path)));
     emit_app_batch(
         &tx,
         &bundles,
@@ -50,14 +57,30 @@ fn emit_app_batch(
     localized_app_names: bool,
     app_exclude_names: &[String],
 ) {
-    // Batch the Info.plist reads for identity and optional localization.
+    // Batch the Info.plist reads for identity, display titles and search names.
     let metadata = macos::read_app_bundle_metadata(bundles, localized_app_names);
     for (path, metadata) in bundles.iter().zip(metadata) {
-        if metadata.as_ref().is_some_and(|bundle| bundle.is_safari) {
+        let Some(metadata) = metadata else {
+            emit_app(tx, path, None, &[], app_exclude_names);
+            continue;
+        };
+        if metadata.is_safari {
             continue;
         }
-        let localized = metadata.and_then(|bundle| bundle.localized_name);
-        emit_app(tx, path, localized, app_exclude_names);
+        let title = metadata.chinese_title.as_deref().or_else(|| {
+            if localized_app_names {
+                metadata.localized_name.as_deref()
+            } else {
+                None
+            }
+        });
+        let search_names: Vec<_> = metadata
+            .localized_name
+            .iter()
+            .chain(metadata.search_names.iter())
+            .map(String::as_str)
+            .collect();
+        emit_app(tx, path, title, &search_names, app_exclude_names);
     }
 }
 
@@ -92,15 +115,20 @@ pub(crate) fn is_excluded_browser_app(candidate: &Candidate) -> bool {
 fn emit_app(
     tx: &mpsc::SyncSender<Candidate>,
     path: &str,
-    localized: Option<String>,
+    localized: Option<&str>,
+    search_names: &[&str],
     app_exclude_names: &[String],
 ) {
     let bundle_name = Path::new(path)
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or(FALLBACK_APP_NAME);
-    let title = localized.unwrap_or_else(|| bundle_name.to_string());
-    if should_exclude_app(&title, bundle_name, app_exclude_names) {
+    let title = localized.unwrap_or(bundle_name);
+    if should_exclude_app(title, bundle_name, app_exclude_names)
+        || search_names
+            .iter()
+            .any(|name| should_exclude_app_name(name, app_exclude_names))
+    {
         return;
     }
 
@@ -108,7 +136,17 @@ fn emit_app(
         "{APP_CANDIDATE_ID_PREFIX}{}",
         candidate_id_path_component(path)
     );
-    let _ = tx.send(Candidate::new(&key, CandidateKind::App, &title, path));
+    let mut candidate = Candidate::new(&key, CandidateKind::App, title, path);
+    let mut names = Vec::new();
+    for name in std::iter::once(bundle_name).chain(search_names.iter().copied()) {
+        if name != title && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    // The launcher already searches and persists this field. Keep path tokens
+    // out of plain name queries: most built-in apps live under /System.
+    candidate.subtitle = (!names.is_empty()).then(|| names.join(" · ").into_boxed_str());
+    let _ = tx.send(candidate);
 }
 
 fn merged_app_scan_roots(
@@ -231,10 +269,12 @@ fn is_safari_app_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_app_bundles, emit_app, emit_app_batch, is_excluded_browser_app,
-        merged_app_scan_roots, should_exclude_app, should_exclude_app_name, should_exclude_path,
+        collect_app_bundles, discover_installed_apps, emit_app, emit_app_batch,
+        is_excluded_browser_app, merged_app_scan_roots, should_exclude_app,
+        should_exclude_app_name, should_exclude_path,
     };
     use crate::platform::macos::test_support::TempDir;
+    use crate::{QueryEngine, config::RuntimeConfig};
     use lumio_indexing::{Candidate, CandidateKind};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -445,8 +485,8 @@ mod tests {
         let path = app.to_str().expect("utf-8 app path");
 
         let (tx, rx) = mpsc::sync_channel(2);
-        emit_app(&tx, path, Some("微信".to_string()), &[]);
-        emit_app(&tx, path, None, &[]);
+        emit_app(&tx, path, Some("微信"), &[], &[]);
+        emit_app(&tx, path, None, &[], &[]);
         drop(tx);
 
         let titles: Vec<String> = rx.into_iter().map(|c| c.title.to_string()).collect();
@@ -458,5 +498,55 @@ mod tests {
         let excludes = vec!["WeChat".to_string()];
         assert!(should_exclude_app("微信", "WeChat", &excludes));
         assert!(should_exclude_app("WeChat", "微信", &excludes));
+    }
+
+    #[test]
+    fn installed_system_app_uses_chinese_title_and_preserves_english_search() {
+        let custom_root = TempDir::new("custom-app-root");
+        let config = RuntimeConfig {
+            app_scan_roots: vec![custom_root.path().to_string_lossy().into_owned()],
+            app_scan_depth: 1,
+            localized_app_names: false,
+            ..RuntimeConfig::default()
+        };
+        let candidates: Vec<_> = std::thread::scope(|scope| {
+            let (tx, rx) = mpsc::sync_channel(16);
+            scope.spawn(|| discover_installed_apps(&config, tx));
+            rx.into_iter().collect()
+        });
+        let engine = QueryEngine::new(candidates);
+
+        for query in ["Activity Monitor", "moni", "活动监视器", "系统监视器"] {
+            let matches = engine.search(query, 8);
+            assert!(
+                matches
+                    .iter()
+                    .any(|app| app.title == "活动监视器"
+                        && app.path.ends_with("/Activity Monitor.app")),
+                "{query}: {matches:?}"
+            );
+        }
+        for (english, chinese) in [
+            ("Finder", "访达"),
+            ("Migration Assistant", "迁移助理"),
+            ("Image Capture", "图像捕捉"),
+        ] {
+            let matches = engine.search(english, 8);
+            assert!(
+                matches
+                    .iter()
+                    .any(|app| app.title == chinese
+                        && app.path.ends_with(&format!("/{english}.app"))),
+                "{english}: {matches:?}"
+            );
+            let matches = engine.search(chinese, 8);
+            assert!(
+                matches
+                    .iter()
+                    .any(|app| app.title == chinese
+                        && app.path.ends_with(&format!("/{english}.app"))),
+                "{chinese}: {matches:?}"
+            );
+        }
     }
 }

@@ -61,6 +61,7 @@ enum AppConstants {
         enum QueryPrefix {
             static let apps = "a\""
             static let folders = "d\""
+            static let settings = "s\""
             // Find running processes, inspect CPU usage, and force quit.
             static let process = "ps\""
         }

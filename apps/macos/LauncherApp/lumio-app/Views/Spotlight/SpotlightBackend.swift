@@ -21,6 +21,10 @@ struct SpotlightRequest: Equatable {
 
     var term: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
     var isEmpty: Bool { term.isEmpty && browse == nil }
+    var isUnscoped: Bool { browse == nil && !LauncherSearchLogic.hasEngineScope(term) }
+    var prioritizesApplications: Bool {
+        isUnscoped && LauncherSearchLogic.prioritizesApplications(for: term)
+    }
 }
 
 /// Query string + count sent to the core. Sendable so it can move to a background thread.
@@ -66,13 +70,25 @@ enum SpotlightBackend {
         }
         var candidates = results.compactMap(item(from:))
         for pin in quickRows(for: request).reversed() {
-            // A matching application should outrank a folder with the same name.
+            // Keep the indexed Finder's current display name and metadata when available.
+            if pin.kind == .app, let index = candidates.firstIndex(where: { sameApplication($0, pin) }) {
+                let app = candidates.remove(at: index)
+                candidates.insert(app, at: 0)
+                continue
+            }
             let app = candidates.firstIndex { $0.kind == .app && $0.name.lowercased() == pin.name.lowercased() }
             candidates.insert(pin, at: app.map { $0 + 1 } ?? 0)
         }
         // What you opened before for text like this goes first (see UsageLearning).
-        if request.browse == nil, !hasEnginePrefix(request.term) {
-            candidates.insert(contentsOf: UsageLearning.shared.picks(for: request.term, limit: 2), at: 0)
+        if request.isUnscoped, !LauncherSearchLogic.isSettingsLandingQuery(request.term) {
+            let learned = UsageLearning.shared.picks(for: request.term, limit: 2).map { item in
+                candidates.first { sameApplication($0, item) } ?? item
+            }
+            candidates.insert(contentsOf: learned, at: 0)
+        }
+        let prioritizeApps = request.prioritizesApplications
+        if prioritizeApps {
+            candidates = LauncherSearchLogic.applicationsFirst(candidates) { $0.kind == .app }
         }
         var seen = Set<String>()
         var rows: [SpotlightItem] = []
@@ -85,21 +101,25 @@ enum SpotlightBackend {
 
         // Synthesized rows appear in general searches.
         let term = request.term
-        guard request.browse == nil, !term.isEmpty, !hasEnginePrefix(term) else { return rows }
+        guard request.isUnscoped, !term.isEmpty else { return rows }
+
+        let appEnd = prioritizeApps ? rows.prefix { $0.kind == .app }.count : 0
+        func insertionIndex(_ standard: Int, count: Int) -> Int {
+            min(max(standard, appEnd), count)
+        }
 
         var leading: [SpotlightItem] = []
         // Cached bookmarks appear after the first applications.
         if term.count >= 3 {
             let marks = bookmarkRows(BrowserBookmarks.search(term, limit: 2, cachedOnly: true))
-            rows.insert(contentsOf: marks, at: min(4, rows.count))
+            rows.insert(contentsOf: marks, at: insertionIndex(4, count: rows.count))
         }
-        // "settings", "lumio", "preferences": Lumio's own Settings window, under the best result.
-        if isSettingsQuery(term) {
-            rows.insert(SpotlightItem(
+        if LauncherSearchLogic.isLumioSettingsQuery(term) {
+            leading.append(SpotlightItem(
                 id: lumioSettingsID, name: "Lumio Settings", kind: .setting,
                 colors: "#9aa2ad,#5c636e", meta: "Open Lumio's settings  ·  ⌘⇧Space",
                 iconPath: Bundle.main.bundlePath, symbol: "gearshape.fill"
-            ), at: min(1, rows.count))
+            ))
         }
         if let match = EngineBridge.shared.classifyURL(query: term) {
             let row = SpotlightItem(
@@ -112,25 +132,29 @@ enum SpotlightBackend {
             if match.tier == .structural {
                 leading.append(row)
             } else {
-                rows.insert(row, at: min(1, rows.count))
+                rows.insert(row, at: insertionIndex(1, count: rows.count))
             }
         }
         // Open browser tabs matching the text: ⏎ switches to the tab instead of opening a new one.
         let openTabs = tabs.map(item(from:))
         let openURLs = Set(tabs.map(\.url))
         rows.removeAll { $0.kind == .url && openURLs.contains($0.target ?? "") }
-        rows.insert(contentsOf: openTabs, at: min(1, rows.count))
+        rows.insert(contentsOf: openTabs, at: insertionIndex(1, count: rows.count))
         // Open windows of other apps matching the text: ⏎ switches to the window.
-        rows.insert(contentsOf: windows.map(item(from:)), at: min(1, rows.count))
+        rows.insert(contentsOf: windows.map(item(from:)), at: insertionIndex(1, count: rows.count))
         // "lock", "sleep", "restart"…: system commands. An exact name leads the list.
         for command in SystemCommands.matching(term).reversed() {
             let row = systemRow(command)
-            if SystemCommands.isExact(term, command) { leading.append(row) } else { rows.insert(row, at: min(1, rows.count)) }
+            if SystemCommands.isExact(term, command) {
+                leading.append(row)
+            } else {
+                rows.insert(row, at: insertionIndex(1, count: rows.count))
+            }
         }
         // Local search tag hints sit after the best result.
         let rest = SearchTags.split(term)?.rest ?? ""
         let hints = SearchTags.suggestions(for: term).map { hintItem(for: $0, rest: rest) }
-        rows.insert(contentsOf: hints, at: min(1, rows.count))
+        rows.insert(contentsOf: hints, at: insertionIndex(1, count: rows.count))
         return leading + rows
     }
 
@@ -209,13 +233,6 @@ enum SpotlightBackend {
 
     static let lumioSettingsID = "lumio|settings"
 
-    /// Typed text heading for "settings", "preferences", "lumio" or "lumio settings".
-    private static func isSettingsQuery(_ term: String) -> Bool {
-        let typed = term.lowercased()
-        guard typed.count >= 3 else { return false }
-        return ["settings", "preferences", "lumio settings", "lumio preferences", "lumio"].contains { $0.hasPrefix(typed) }
-    }
-
     // MARK: - Browser data and local search tags
 
     nonisolated static let tabLimit = 4
@@ -278,8 +295,8 @@ enum SpotlightBackend {
     }
 
     /// Merges folders and local browser data into the core results.
-    static func addingExtras(_ extras: Extras, term: String, to rows: [SpotlightItem]) -> [SpotlightItem] {
-        var out = addingFolders(extras.folders, term: term, to: rows)
+    static func addingExtras(_ extras: Extras, for request: SpotlightRequest, to rows: [SpotlightItem]) -> [SpotlightItem] {
+        var out = addingFolders(extras.folders, term: request.term, to: rows)
         let listed = Set(out.compactMap { $0.target?.lowercased() })
         var seenURLs = Set<String>()
         var browserRows = (bookmarkRows(extras.bookmarks) + historyRows(extras.history))
@@ -294,7 +311,9 @@ enum SpotlightBackend {
             browserRows.insert(browserRows.remove(at: firstHistory), at: 1)
         }
         let leading = out.prefix(8).lastIndex { [.tab, .tagHint, .url].contains($0.kind) }.map { $0 + 1 } ?? 0
-        let first = min(max(leading, 4), out.count)
+        let appEnd = request.prioritizesApplications
+            ? out.lastIndex { $0.kind == .app }.map { $0 + 1 } ?? 0 : 0
+        let first = min(max(leading, 4, appEnd), out.count)
         out.insert(contentsOf: browserRows.prefix(2), at: first)
         let later = min(first + min(browserRows.count, 2) + 6, out.count)
         out.insert(contentsOf: browserRows.dropFirst(2), at: later)
@@ -464,10 +483,11 @@ enum SpotlightBackend {
         return rows
     }
 
-    private static func hasEnginePrefix(_ term: String) -> Bool {
-        typealias Prefix = AppConstants.Launcher.QueryPrefix
-        let lower = term.lowercased()
-        return lower.hasPrefix(Prefix.apps) || lower.hasPrefix(Prefix.folders)
+    private static func sameApplication(_ lhs: SpotlightItem, _ rhs: SpotlightItem) -> Bool {
+        guard lhs.kind == .app, rhs.kind == .app else { return false }
+        if let id = lhs.candidateID, id == rhs.candidateID { return true }
+        if let target = lhs.target, target == rhs.target { return true }
+        return lhs.iconPath != nil && lhs.iconPath == rhs.iconPath
     }
 
     private static func dedupeKey(_ item: SpotlightItem) -> String {

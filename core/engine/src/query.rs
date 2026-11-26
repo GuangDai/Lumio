@@ -1,15 +1,35 @@
 use crate::normalize::normalize_for_search;
-use lumio_indexing::CandidateKind;
+use lumio_indexing::{Candidate, CandidateIdKind, CandidateKind};
 
 // Query prefixes: leading letter matched case-insensitively, trailing `"`
 // exactly (see `strip_query_prefix`).
 const PREFIX_APPS: &[u8] = b"a\"";
 const PREFIX_FOLDERS: &[u8] = b"d\"";
+const PREFIX_SETTINGS: &[u8] = b"s\"";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SearchScope {
+    All,
+    Applications,
+    Folders,
+    Settings,
+}
+
+impl SearchScope {
+    pub(crate) fn matches(self, candidate: &Candidate) -> bool {
+        match self {
+            Self::All => true,
+            Self::Applications => candidate.kind == CandidateKind::App,
+            Self::Folders => candidate.kind == CandidateKind::Folder,
+            Self::Settings => candidate.id.starts_with(CandidateIdKind::PREFIX_SETTING),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedQuery {
     pub(crate) normalized_query: String,
-    pub(crate) kind_filter: Option<CandidateKind>,
+    pub(crate) scope: SearchScope,
 }
 
 impl ParsedQuery {
@@ -17,28 +37,31 @@ impl ParsedQuery {
         #[cfg(windows)]
         let input = input.replace('\\', "/");
         let trimmed = input.trim();
-        if let Some(rest) = strip_query_prefix(trimmed, PREFIX_FOLDERS) {
-            return Self {
-                normalized_query: normalize_for_search(rest),
-                kind_filter: Some(CandidateKind::Folder),
-            };
-        }
-
-        if let Some(rest) = strip_query_prefix(trimmed, PREFIX_APPS) {
-            return Self {
-                normalized_query: normalize_for_search(rest),
-                kind_filter: Some(CandidateKind::App),
-            };
+        for (prefix, scope) in [
+            (PREFIX_APPS, SearchScope::Applications),
+            (PREFIX_FOLDERS, SearchScope::Folders),
+            (PREFIX_SETTINGS, SearchScope::Settings),
+        ] {
+            if let Some(rest) = strip_query_prefix(trimmed, prefix) {
+                return Self {
+                    normalized_query: normalize_for_search(rest),
+                    scope,
+                };
+            }
         }
 
         Self {
             normalized_query: normalize_for_search(trimmed),
-            kind_filter: trimmed.contains('/').then_some(CandidateKind::Folder),
+            scope: if trimmed.contains('/') {
+                SearchScope::Folders
+            } else {
+                SearchScope::All
+            },
         }
     }
 
     pub(crate) fn is_folder_path(&self) -> bool {
-        self.kind_filter == Some(CandidateKind::Folder) && self.normalized_query.contains('/')
+        self.scope == SearchScope::Folders && self.normalized_query.contains('/')
     }
 }
 
@@ -57,13 +80,12 @@ fn strip_query_prefix<'a>(input: &'a str, prefix: &[u8]) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::ParsedQuery;
-    use lumio_indexing::CandidateKind;
+    use super::{ParsedQuery, SearchScope};
 
     #[test]
     fn app_prefix_sets_filter() {
         let parsed = ParsedQuery::from_input("A\"safari");
-        assert_eq!(parsed.kind_filter, Some(CandidateKind::App));
+        assert_eq!(parsed.scope, SearchScope::Applications);
         assert_eq!(parsed.normalized_query, "safari");
     }
 
@@ -71,7 +93,7 @@ mod tests {
     fn path_queries_search_only_folders() {
         for input in ["D/T", "d\"D/T"] {
             let parsed = ParsedQuery::from_input(input);
-            assert_eq!(parsed.kind_filter, Some(CandidateKind::Folder));
+            assert_eq!(parsed.scope, SearchScope::Folders);
             assert_eq!(parsed.normalized_query, "d/t");
             assert!(parsed.is_folder_path());
         }
@@ -80,7 +102,7 @@ mod tests {
     #[test]
     fn removed_prefixes_are_plain_text() {
         for input in ["f\"document", "rc\"report", "r\"foo"] {
-            assert!(ParsedQuery::from_input(input).kind_filter.is_none());
+            assert_eq!(ParsedQuery::from_input(input).scope, SearchScope::All);
         }
     }
 }

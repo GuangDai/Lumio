@@ -564,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_prefix_query_sett_prioritizes_system_settings_entry() {
+    fn settings_scope_matches_pane_subtitles_without_returning_folders() {
         let mut settings_app = Candidate::new(
             "setting:general",
             CandidateKind::App,
@@ -581,7 +581,7 @@ mod tests {
         );
 
         let engine = QueryEngine::new(vec![settings_folder, settings_app]);
-        let results = engine.search_scored("sett", 10);
+        let results = engine.search_scored("s\"sett", 10);
         assert_eq!(
             results.first().map(|(candidate, _)| candidate.id.as_ref()),
             Some("setting:general")

@@ -8,6 +8,12 @@ pub(crate) const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
         aliases: "settings general about software update storage",
     },
     SettingsCatalogEntry {
+        title: "Time Machine",
+        target: "com.apple.Time-Machine-Settings.extension",
+        candidate_id_suffix: "com.apple.time-machine-settings.extension",
+        aliases: "settings time machine backup backup disk 时间机器 備份 备份",
+    },
+    SettingsCatalogEntry {
         title: "Apple ID",
         target: "com.apple.systempreferences.AppleIDSettings",
         candidate_id_suffix: "com.apple.systempreferences.appleidsettings",

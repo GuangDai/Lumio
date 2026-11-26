@@ -129,22 +129,29 @@ pub(crate) fn query_kind_penalty_with_settings_flag(
 }
 
 pub(crate) fn looks_like_settings_query(query: &str) -> bool {
-    // `query` comes from normalized input in the search path, so we avoid
-    // allocating a lowercased copy here and match hints directly.
-    if QUERY_SETTINGS_HINTS.iter().any(|hint| query.contains(hint)) {
-        return true;
-    }
+    query.contains("设置")
+        || query.contains("設定")
+        || query
+            .split_whitespace()
+            .any(|word| matches!(word, "setting" | "settings" | "preference" | "preferences"))
+}
 
-    for word in query.split_whitespace() {
-        if word.len() >= 3
-            && QUERY_SETTINGS_HINTS
-                .iter()
-                .any(|hint| hint.starts_with(word))
-        {
-            return true;
-        }
-    }
-    false
+pub(crate) fn is_settings_landing_query(query: &str) -> bool {
+    matches!(
+        query,
+        "setting"
+            | "settings"
+            | "system settings"
+            | "preference"
+            | "preferences"
+            | "system preferences"
+            | "设置"
+            | "系统设置"
+            | "系统偏好设置"
+            | "設定"
+            | "系統設定"
+            | "系統偏好設定"
+    )
 }
 
 pub(crate) fn is_system_settings_candidate(candidate: &Candidate) -> bool {
@@ -154,6 +161,11 @@ pub(crate) fn is_system_settings_candidate(candidate: &Candidate) -> bool {
             .as_deref()
             .unwrap_or("")
             .contains(SETTINGS_SUBTITLE_PREFIX)
+}
+
+pub(crate) fn is_macos_settings_application(candidate: &Candidate) -> bool {
+    candidate.kind == CandidateKind::App
+        && candidate.path.as_ref() == "/System/Applications/System Settings.app"
 }
 
 pub(crate) fn path_depth_penalty(candidate: &Candidate) -> i64 {
@@ -200,8 +212,9 @@ fn browse_recency_boost(age_hours: i64) -> i64 {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScoredMatch<'a> {
-    idx: u32,
-    score: i64,
+    pub(crate) idx: u32,
+    pub(crate) score: i64,
+    preferred: bool,
     // Borrowed title powers the BinaryHeap tiebreak without cloning the Candidate.
     // Lifetime is scoped to the candidate slice, which outlives the heap.
     title: &'a str,
@@ -209,7 +222,7 @@ pub(crate) struct ScoredMatch<'a> {
 
 impl PartialEq for ScoredMatch<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.score == other.score && self.title == other.title
+        self.preferred == other.preferred && self.score == other.score && self.title == other.title
     }
 }
 
@@ -217,17 +230,27 @@ impl Eq for ScoredMatch<'_> {}
 
 impl<'a> ScoredMatch<'a> {
     pub(crate) fn new(idx: u32, score: i64, title: &'a str) -> Self {
-        Self { idx, score, title }
+        Self {
+            idx,
+            score,
+            preferred: false,
+            title,
+        }
+    }
+
+    pub(crate) fn with_priority(mut self, preferred: bool) -> Self {
+        self.preferred = preferred;
+        self
     }
 }
 
 impl Ord for ScoredMatch<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.score.cmp(&other.score) {
-            Ordering::Less => Ordering::Greater,
-            Ordering::Greater => Ordering::Less,
-            Ordering::Equal => self.title.cmp(other.title),
-        }
+        other
+            .preferred
+            .cmp(&self.preferred)
+            .then_with(|| other.score.cmp(&self.score))
+            .then_with(|| self.title.cmp(other.title))
     }
 }
 
@@ -255,18 +278,9 @@ pub(crate) fn push_top_k<'a>(
     }
 }
 
-pub(crate) fn finalize_top_k(heap: BinaryHeap<ScoredMatch<'_>>) -> Vec<(u32, i64)> {
-    // Returns (candidate_index, score) pairs sorted best-first. Callers materialize
-    // Candidates by indexing into their candidate slice, so only the final top-K
-    // are cloned - the heap itself never held a Candidate.
-    let mut out: Vec<(u32, i64, &str)> = heap
-        .into_iter()
-        .map(|entry| (entry.idx, entry.score, entry.title))
-        .collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(b.2)));
-    out.into_iter()
-        .map(|(idx, score, _)| (idx, score))
-        .collect()
+pub(crate) fn finalize_top_k(heap: BinaryHeap<ScoredMatch<'_>>) -> Vec<ScoredMatch<'_>> {
+    // The heap keeps the worst eligible match at its root; ascending order is best-first.
+    heap.into_sorted_vec()
 }
 
 #[cfg(test)]
@@ -401,8 +415,8 @@ mod tests {
         assert_eq!(heap.len(), 3);
 
         let results = finalize_top_k(heap);
-        assert!(results[0].1 >= results[1].1);
-        assert!(results[1].1 >= results[2].1);
+        assert!(results[0].score >= results[1].score);
+        assert!(results[1].score >= results[2].score);
     }
 
     #[test]
@@ -453,8 +467,8 @@ mod tests {
         let regular_app = app("Safari", "/Applications/Safari.app");
         let regular_action = Candidate::new("src:task:notes", CandidateKind::Action, "notes", "");
 
-        let settings_like = "network";
-        let non_settings_like = "ingo";
+        let settings_like = "network settings";
+        let non_settings_like = "network";
 
         assert_eq!(
             query_kind_penalty_with_settings_flag(
@@ -487,9 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn looks_like_settings_query_accepts_short_prefixes() {
-        assert!(looks_like_settings_query("sett"));
-        assert!(looks_like_settings_query("priv"));
+    fn looks_like_settings_query_requires_an_explicit_settings_word() {
+        assert!(looks_like_settings_query("display settings"));
+        assert!(looks_like_settings_query("设置"));
+        assert!(!looks_like_settings_query("sett"));
+        assert!(!looks_like_settings_query("displaylink"));
+        assert!(!looks_like_settings_query("network"));
         assert!(!looks_like_settings_query("ingo"));
     }
 

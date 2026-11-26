@@ -894,7 +894,7 @@ struct SpotlightLauncherView: View {
                 && (request.browse == .folder || EngineBridge.shared.classifyURL(query: term) == nil)
             let coreRequest = relativePath ? SpotlightRequest(text: term, browse: .folder) : request
             let engineQuery = SpotlightBackend.engineQuery(for: coreRequest)
-            let wantsBrowserRows = coreRequest.browse == nil && term.count >= 2
+            let wantsBrowserRows = coreRequest.isUnscoped && term.count >= 2
             let wantsBookmarks = wantsBrowserRows && term.count >= 3 && !term.hasPrefix(">")
             let wantsFolders = allowsFolders && !relativePath && !term.contains("/") && !term.contains("\"")
                 && !term.hasPrefix(">") && (coreRequest.browse == .folder || term.count >= 3)
@@ -933,7 +933,7 @@ struct SpotlightLauncherView: View {
                 }
                 guard !Task.isCancelled else { return }
                 searchTask = nil
-                publish(SpotlightBackend.addingExtras(extras, term: term, to: initial))
+                publish(SpotlightBackend.addingExtras(extras, for: coreRequest, to: initial))
                 return
             }
             searchTask = nil
@@ -946,7 +946,7 @@ struct SpotlightLauncherView: View {
                 await withTaskCancellationHandler {
                     let extras = await lookup.value
                     guard !Task.isCancelled else { return }
-                    republish(SpotlightBackend.addingExtras(extras, term: term, to: all))
+                    republish(SpotlightBackend.addingExtras(extras, for: coreRequest, to: all))
                     extrasTask = nil
                 } onCancel: {
                     lookup.cancel()
@@ -1042,9 +1042,10 @@ struct SpotlightLauncherView: View {
                 return
             }
             if tag.settingsOnly {
-                // `settings` ⇥: System Settings panes (they live among the apps in the core).
+                // Scope before the core applies its limit so app results cannot hide a pane.
+                let query = AppConstants.Launcher.QueryPrefix.settings + term
                 let found = await Task.detached(priority: .userInitiated) {
-                    EngineBridge.shared.search(query: "a\"" + term, limit: 120)
+                    EngineBridge.shared.search(query: query, limit: SpotlightBackend.resultLimit)
                 }.value
                 guard !Task.isCancelled else { return }
                 searchTask = nil

@@ -35,15 +35,6 @@ pub const BIAS_SETTINGS_MATCH: i64 = 420;
 pub const BIAS_APP_ON_SETTINGS_QUERY: i64 = 120;
 pub const BIAS_NON_APP_ON_SETTINGS_QUERY: i64 = -260;
 
-pub const QUERY_SETTINGS_HINTS: [&str; 6] = [
-    "setting",
-    "display",
-    "network",
-    "bluetooth",
-    "privacy",
-    "sound",
-];
-
 pub const SKIP_DIR_NAMES: [&str; 17] = [
     "node_modules",
     "target",

@@ -2,6 +2,27 @@ import XCTest
 @testable import LauncherLogic
 
 final class LauncherSearchLogicTests: XCTestCase {
+    func testApplicationOrderingKeepsOtherResultsAfterAllApps() {
+        let rows = ["Folder", "App B", "Browser tab", "App A", "Settings pane"]
+        let ordered = LauncherSearchLogic.applicationsFirst(rows) { $0.hasPrefix("App ") }
+        XCTAssertEqual(ordered, ["App B", "App A", "Folder", "Browser tab", "Settings pane"])
+    }
+
+    func testSettingsIntentRequiresExplicitQueryTerms() {
+        XCTAssertTrue(LauncherSearchLogic.prioritizesApplications(for: "moni"))
+        XCTAssertTrue(LauncherSearchLogic.prioritizesApplications(for: "display"))
+        XCTAssertTrue(LauncherSearchLogic.prioritizesApplications(for: "net"))
+        XCTAssertFalse(LauncherSearchLogic.prioritizesApplications(for: "Privacy Settings"))
+        XCTAssertFalse(LauncherSearchLogic.prioritizesApplications(for: "系统设置"))
+        XCTAssertTrue(LauncherSearchLogic.isSettingsLandingQuery(" Settings "))
+        XCTAssertFalse(LauncherSearchLogic.isSettingsLandingQuery("privacy settings"))
+        XCTAssertFalse(LauncherSearchLogic.isLumioSettingsQuery("settings"))
+        XCTAssertFalse(LauncherSearchLogic.isLumioSettingsQuery("lumio"))
+        XCTAssertTrue(LauncherSearchLogic.isLumioSettingsQuery("Lumio Settings"))
+        XCTAssertTrue(LauncherSearchLogic.isLumioSettingsQuery("lumio 设置"))
+        XCTAssertTrue(LauncherSearchLogic.hasEngineScope("s\"network"))
+    }
+
     func testPinnedScopeDetection() {
         XCTAssertEqual(LauncherSearchLogic.pinnedLookupScope(for: "finder"), .unscoped)
         XCTAssertEqual(LauncherSearchLogic.pinnedLookupScope(for: "a\"finder"), .apps)

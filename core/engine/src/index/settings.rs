@@ -88,7 +88,14 @@ fn localized_titles(localized_app_names: bool) -> LocalizedTitles {
 /// queries, so a title that dropped the English name would make the pane
 /// unreachable by queries like `wifi` on a non-English system.
 fn display_title(entry: &SettingsCatalogEntry, localized: &LocalizedTitles) -> String {
-    match localized.get(entry.target) {
+    let localized_name = localized.get(entry.target).map(String::as_str);
+    #[cfg(target_os = "macos")]
+    let localized_name = if entry.target == "com.apple.Time-Machine-Settings.extension" {
+        Some("时间机器")
+    } else {
+        localized_name
+    };
+    match localized_name {
         Some(localized_title) => format!("{localized_title} ({})", entry.title),
         None => entry.title.to_string(),
     }
@@ -265,6 +272,25 @@ mod tests {
             1,
             "localized query lost it"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn time_machine_settings_are_searchable_in_chinese_and_english() {
+        let engine = crate::QueryEngine::new(discover_settings(false));
+        for query in ["时间机器", "Time Machine"] {
+            let results = engine.search(query, 15);
+            let pane = results
+                .iter()
+                .find(|row| {
+                    row.path
+                        == "x-apple.systempreferences:com.apple.Time-Machine-Settings.extension"
+                })
+                .unwrap_or_else(|| {
+                    panic!("missing Time Machine settings for {query}: {results:?}")
+                });
+            assert!(pane.title.starts_with("时间机器"));
+        }
     }
 
     /// No localized entry means no decoration: the title stays exactly what the

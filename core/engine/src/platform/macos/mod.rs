@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::platform::SettingsCatalogEntry;
 use objc2::rc::Retained;
-use objc2_foundation::{NSArray, NSBundle, NSLocale, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSFileManager, NSLocale, NSString};
 
 pub(crate) const APP_SCAN_ROOTS: &[&str] = &[
     "/Applications",
@@ -20,6 +20,8 @@ pub(crate) const APP_SCAN_ROOTS: &[&str] = &[
 ];
 
 pub(crate) const REQUIRED_APP_SCAN_ROOTS: &[&str] = &[
+    "/System/Applications",
+    "/System/Applications/Utilities",
     "/System/Library/CoreServices/Applications",
     "/System/Library/CoreServices/Finder.app/Contents/Applications",
 ];
@@ -69,6 +71,8 @@ pub(crate) fn additional_app_scan_roots() -> Vec<String> {
 struct AppBundleMetadata {
     is_safari: bool,
     localized_name: Option<String>,
+    chinese_title: Option<String>,
+    search_names: Vec<String>,
 }
 
 /// Bundle identity and optional localized names, in input path order.
@@ -76,19 +80,176 @@ fn read_app_bundle_metadata(
     paths: &[String],
     localized_names: bool,
 ) -> Vec<Option<AppBundleMetadata>> {
-    let localize = localized_names && localized_names_available();
-    read_bundles(paths, |bundle, languages, _| {
+    read_bundles(paths, |bundle, languages, path| {
         let is_safari = is_safari_bundle(bundle);
-        let localized_name = if localize && !is_safari {
-            read_bundle_name_for_languages(bundle, APP_BUNDLE_EXTENSION, languages)
+        if is_safari {
+            return Some(AppBundleMetadata {
+                is_safari,
+                localized_name: None,
+                chinese_title: None,
+                search_names: Vec::new(),
+            });
+        }
+
+        let is_system_app = path.starts_with("/System/")
+            || (bundle
+                .bundleIdentifier()
+                .is_some_and(|identifier| identifier.to_string().starts_with("com.apple."))
+                && std::fs::canonicalize(path).is_ok_and(|path| path.starts_with("/System")));
+        let localized_name = if localized_names || is_system_app {
+            localized_application_name(bundle, languages, path)
         } else {
             None
+        };
+        let (chinese_title, search_names) = if is_system_app {
+            system_application_names(bundle, path)
+        } else {
+            (None, Vec::new())
         };
         Some(AppBundleMetadata {
             is_safari,
             localized_name,
+            chinese_title,
+            search_names,
         })
     })
+}
+
+fn localized_application_name(
+    bundle: &NSBundle,
+    languages: &NSArray<NSString>,
+    path: &str,
+) -> Option<String> {
+    if localized_names_available()
+        && let Some(name) = read_bundle_name_for_languages(bundle, APP_BUNDLE_EXTENSION, languages)
+    {
+        return Some(name);
+    }
+    let name = NSFileManager::defaultManager().displayNameAtPath(&NSString::from_str(path));
+    normalize_display_name(&name.to_string(), APP_BUNDLE_EXTENSION)
+}
+
+fn system_application_names(bundle: &NSBundle, path: &str) -> (Option<String>, Vec<String>) {
+    let bundle_path = Path::new(path);
+    let name = bundle_path.file_stem().and_then(|name| name.to_str());
+    let (fallback, extra_names): (Option<&str>, &[&str]) = match name {
+        Some("Activity Monitor") => (
+            Some("活动监视器"),
+            &["系統監視器", "系统监视器", "活動監視器"],
+        ),
+        Some("AirPort Utility") => (Some("AirPort 实用工具"), &[]),
+        Some("Audio MIDI Setup") => (Some("音频 MIDI 设置"), &[]),
+        Some("Automator") => (Some("自动操作"), &[]),
+        Some("Bluetooth File Exchange") => (Some("蓝牙文件交换"), &[]),
+        Some("ColorSync Utility") => (Some("色彩同步实用工具"), &[]),
+        Some("Console") => (Some("控制台"), &[]),
+        Some("Dictionary") => (Some("词典"), &[]),
+        Some("Digital Color Meter") => (Some("数码测色计"), &[]),
+        Some("Disk Utility") => (Some("磁盘工具"), &[]),
+        Some("Finder") => (Some("访达"), &["訪達"]),
+        Some("Font Book") => (Some("字体册"), &[]),
+        Some("Image Capture") => (Some("图像捕捉"), &["影像擷取"]),
+        Some("Image Playground") => (Some("图乐园"), &["影像樂園"]),
+        Some("Migration Assistant") => (Some("迁移助理"), &["移轉輔助程式"]),
+        Some("Mission Control") => (Some("调度中心"), &[]),
+        Some("Preview") => (Some("预览"), &[]),
+        Some("Print Center" | "Printer Setup Utility") => (Some("打印中心"), &["Print Center"]),
+        Some("Screen Sharing") => (Some("屏幕共享"), &[]),
+        Some("Screenshot") => (Some("截屏"), &[]),
+        Some("Script Editor") => (Some("脚本编辑器"), &[]),
+        Some("Shortcuts") => (Some("快捷指令"), &[]),
+        Some("Stickies") => (Some("便笺"), &[]),
+        Some("System Information") => (Some("系统信息"), &[]),
+        Some("System Settings" | "System Preferences") => (
+            Some("系统设置"),
+            &[
+                "系統設定",
+                "System Preferences",
+                "系统偏好设置",
+                "系統偏好設定",
+            ],
+        ),
+        Some("Terminal") => (Some("终端"), &[]),
+        Some("TextEdit") => (Some("文本编辑"), &[]),
+        Some("Time Machine") => (Some("时间机器"), &["時間機器"]),
+        Some("Tips") => (Some("提示"), &[]),
+        Some("VoiceOver Utility") => (Some("旁白实用工具"), &[]),
+        Some("iPhone Mirroring") => (
+            Some("iPhone 镜像"),
+            &["iPhone 镜像", "iPhone 鏡像", "iPhone 鏡像輸出"],
+        ),
+        _ => (None, &[]),
+    };
+    let simplified = read_chinese_bundle_name(bundle, "zh-Hans", &["zh-Hans", "zh_CN", "zh"]);
+    let title = if matches!(name, Some("Grapher" | "QuickTime Player")) {
+        // Apple uses the original brand names on the Simplified Chinese Mac.
+        name.map(str::to_owned)
+    } else {
+        simplified.clone().or_else(|| fallback.map(str::to_owned))
+    };
+    let search_names = simplified
+        .into_iter()
+        .chain(fallback.map(str::to_owned))
+        .chain(read_chinese_bundle_name(
+            bundle,
+            "zh-Hant",
+            &["zh-Hant", "zh_TW"],
+        ))
+        .chain(extra_names.iter().copied().map(str::to_owned))
+        .collect();
+    (title, search_names)
+}
+
+fn read_chinese_bundle_name(
+    bundle: &NSBundle,
+    language: &str,
+    resource_names: &[&str],
+) -> Option<String> {
+    let table = NSString::from_str(INFO_PLIST_STRINGS_TABLE);
+    if localized_names_available() {
+        let language = NSString::from_str(language);
+        let languages = NSArray::from_slice(&[&*language]);
+        for key in DISPLAY_NAME_KEYS {
+            // An Info.plist fallback can contain a name from the current locale.
+            let name = bundle.localizedStringForKey_value_table_localizations(
+                &NSString::from_str(key),
+                None,
+                Some(&table),
+                &languages,
+            );
+            if let Some(name) = normalize_display_name(&name.to_string(), APP_BUNDLE_EXTENSION)
+                .filter(|name| contains_han(name))
+            {
+                return Some(name);
+            }
+        }
+    }
+
+    // On macOS 15.0–15.3, open the individual localized resource directory.
+    let resources = bundle.resourcePath()?.to_string();
+    for name in resource_names {
+        let path = Path::new(&resources).join(format!("{name}.lproj"));
+        let Some(localization) = path.to_str().and_then(load_bundle) else {
+            continue;
+        };
+        for key in DISPLAY_NAME_KEYS {
+            let name = localization.localizedStringForKey_value_table(
+                &NSString::from_str(key),
+                None,
+                Some(&table),
+            );
+            if let Some(name) = normalize_display_name(&name.to_string(), APP_BUNDLE_EXTENSION)
+                .filter(|name| contains_han(name))
+            {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+fn contains_han(name: &str) -> bool {
+    name.chars().any(|character| matches!(character, '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}'))
 }
 
 fn is_safari_bundle(bundle: &NSBundle) -> bool {

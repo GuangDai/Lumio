@@ -58,8 +58,8 @@ jobs:
       - name: Install nightly Rust for the Xcode build phase
         run: rustup toolchain install nightly --profile minimal
 
-      - name: Test macOS application discovery
-        run: cargo +nightly test --locked --manifest-path core/Cargo.toml -p lumio-engine platform::macos::apps::tests
+      - name: Test native macOS search and application discovery
+        run: cargo +nightly test --locked --manifest-path core/Cargo.toml -p lumio-engine -- --nocapture
 
       - name: Build and verify Lumio.dmg
         run: |

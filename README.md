@@ -85,6 +85,8 @@ Quit Lumio and move `/Applications/Lumio.app` to the Trash. To remove its settin
 
 Lumio fuzzy-searches apps, folders and settings. Results can also include bookmarks, Chromium history, open browser tabs and windows. Results learn from what you open, and the detail pane shows actions for the selected result.
 
+Matching applications appear first in general searches. Built-in macOS apps display their Simplified Chinese names when available and can also be found by their English names.
+
 Type a tag and press `Tab` to narrow a search. Tags can be stacked, and `Option+T` opens the tag browser:
 
 ```text
@@ -95,6 +97,8 @@ windows Tab                List open windows
 ```
 
 Press `Enter` on an open browser tab to switch to it. Pin results to Home with `Cmd+Shift+P`, or enable recently used apps in Settings → General → **Suggestions when empty**.
+
+Search for `settings` to find System Settings, or press `Tab` on the `settings` keyword to search its individual panes. Search for `Lumio Settings` to open this app's settings.
 
 ### Open a folder in Finder
 

@@ -1,9 +1,9 @@
 use crate::QueryEngine;
-use crate::query::ParsedQuery;
+use crate::query::{ParsedQuery, SearchScope};
 use crate::scoring::{
     ScoredMatch, contains_match_score, default_browse_score, finalize_top_k,
-    is_system_settings_candidate, kind_bias, looks_like_settings_query, path_depth_penalty,
-    path_match_score, push_top_k, query_kind_penalty_with_settings_flag,
+    is_macos_settings_application, is_settings_landing_query, kind_bias, looks_like_settings_query,
+    path_depth_penalty, path_match_score, push_top_k, query_kind_penalty_with_settings_flag,
 };
 use lumio_indexing::{Candidate, CandidateKind};
 use lumio_matching::{
@@ -18,11 +18,6 @@ const RERANK_TOP_N: usize = 80;
 const RERANK_MIN_QUERY_CHARS: usize = 3;
 const SCORE_ALIAS_TITLE_MATCH: i64 = 1_520;
 const SCORE_ALIAS_SUBTITLE_MATCH: i64 = 1_260;
-
-fn top_limit(mut ranked: Vec<(u32, i64)>, limit: usize) -> Vec<(u32, i64)> {
-    ranked.truncate(limit);
-    ranked
-}
 
 impl QueryEngine {
     fn has_term_boundary_match(haystack: &str, term: &str) -> bool {
@@ -47,24 +42,6 @@ impl QueryEngine {
 
         false
     }
-    fn alias_terms_for_query<'a>(
-        &'a self,
-        normalized_query: &str,
-        kind_filter: Option<&CandidateKind>,
-    ) -> Option<&'a Vec<String>> {
-        if normalized_query.is_empty() {
-            return None;
-        }
-
-        if let Some(kind) = kind_filter
-            && *kind != CandidateKind::App
-        {
-            return None;
-        }
-
-        self.search_aliases.get(normalized_query)
-    }
-
     fn alias_match_score(
         alias_terms: &[String],
         title_search: &str,
@@ -84,18 +61,7 @@ impl QueryEngine {
         best
     }
 
-    fn kind_matches(
-        candidate: &crate::IndexedCandidate,
-        kind_filter: Option<&CandidateKind>,
-    ) -> bool {
-        kind_filter.is_none_or(|kind| &candidate.candidate.kind == kind)
-    }
-
-    fn search_empty_query(
-        &self,
-        kind_filter: Option<&CandidateKind>,
-        limit: usize,
-    ) -> Vec<(u32, i64)> {
+    fn search_empty_query(&self, scope: SearchScope, limit: usize) -> Vec<ScoredMatch<'_>> {
         // Empty-query mode is a browse ranking pass: usage + recency, no text matching.
         let now_unix_s = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -104,7 +70,7 @@ impl QueryEngine {
 
         let mut top = BinaryHeap::new();
         for (idx, candidate) in self.candidates.iter().enumerate() {
-            if !Self::kind_matches(candidate, kind_filter) {
+            if !scope.matches(&candidate.candidate) {
                 continue;
             }
             let score = default_browse_score(&candidate.candidate, now_unix_s);
@@ -118,7 +84,7 @@ impl QueryEngine {
         finalize_top_k(top)
     }
 
-    fn search_folder_path(&self, query: &str, limit: usize) -> Vec<(u32, i64)> {
+    fn search_folder_path(&self, query: &str, limit: usize) -> Vec<ScoredMatch<'_>> {
         // The launcher resolves explicit absolute or home-relative addresses itself.
         // An unresolved absolute path must not turn into a fuzzy match elsewhere.
         if query.starts_with('/') || query.starts_with("~/") {
@@ -155,31 +121,37 @@ impl QueryEngine {
     fn search_text_query(
         &self,
         normalized_query: &str,
-        kind_filter: Option<&CandidateKind>,
+        scope: SearchScope,
         limit: usize,
-    ) -> Vec<(u32, i64)> {
+    ) -> Vec<ScoredMatch<'_>> {
         // Stage 1: fast retrieval over all candidates into a bounded top-K pool.
         let prepared_query = prepare_query(normalized_query);
         let mut top = BinaryHeap::new();
         let has_path_hint = normalized_query.contains('/');
         // Query-level flag reused across all candidates in this search pass.
-        let settings_query = looks_like_settings_query(normalized_query);
+        let settings_query =
+            scope == SearchScope::Settings || looks_like_settings_query(normalized_query);
+        let prefer_apps = scope == SearchScope::All && !settings_query;
+        let settings_landing =
+            scope != SearchScope::Settings && is_settings_landing_query(normalized_query);
         let pool_limit = (limit.saturating_mul(RERANK_POOL_MULTIPLIER)).max(RERANK_TOP_N);
-        let alias_terms = self.alias_terms_for_query(normalized_query, kind_filter);
+        let alias_terms = self.search_aliases.get(normalized_query);
 
         for (idx, candidate) in self.candidates.iter().enumerate() {
-            if !Self::kind_matches(candidate, kind_filter) {
+            let is_settings_pane = SearchScope::Settings.matches(&candidate.candidate);
+            if !scope.matches(&candidate.candidate) || (settings_landing && is_settings_pane) {
                 continue;
             }
+            let is_settings_application =
+                settings_landing && is_macos_settings_application(&candidate.candidate);
             // Use precomputed normalized strings from IndexedCandidate.
             // This avoids normalize_for_search allocations in the hot loop.
             let title_score = fuzzy_score_prepared(&prepared_query, &candidate.title_search);
-            let subtitle_search =
-                if !settings_query && is_system_settings_candidate(&candidate.candidate) {
-                    None
-                } else {
-                    candidate.subtitle_search.as_deref()
-                };
+            let subtitle_search = if !settings_query && is_settings_pane {
+                None
+            } else {
+                candidate.subtitle_search.as_deref()
+            };
             let subtitle_score = subtitle_search
                 .as_ref()
                 .and_then(|subtitle| fuzzy_score_prepared(&prepared_query, subtitle))
@@ -191,18 +163,13 @@ impl QueryEngine {
             } else {
                 None
             };
-            let alias_subtitle_search = if is_system_settings_candidate(&candidate.candidate) {
-                candidate.subtitle_search.as_deref()
-            } else {
-                subtitle_search
-            };
             let alias_score = alias_terms.and_then(|terms| {
                 if candidate.candidate.kind == CandidateKind::App {
                     // Alias boosts are app-only to avoid distorting folder ranking.
                     return Self::alias_match_score(
                         terms,
                         &candidate.title_search,
-                        alias_subtitle_search,
+                        candidate.subtitle_search.as_deref(),
                     );
                 }
                 None
@@ -214,6 +181,7 @@ impl QueryEngine {
                 contains_score,
                 path_score,
                 alias_score,
+                is_settings_application.then_some(SCORE_ALIAS_TITLE_MATCH),
             ]
             .into_iter()
             .flatten()
@@ -232,9 +200,16 @@ impl QueryEngine {
                 // Reuse precomputed query kind to keep this hot loop allocation-free.
                 + query_kind_penalty_with_settings_flag(settings_query, &candidate.candidate)
                 + path_depth_penalty(&candidate.candidate);
+            // Apply priority before the heap limit so strong matches from
+            // other groups cannot crowd matching apps out of the result set.
+            let preferred = is_settings_application
+                || (prefer_apps
+                    && candidate.candidate.kind == CandidateKind::App
+                    && !is_settings_pane);
             push_top_k(
                 &mut top,
-                ScoredMatch::new(idx as u32, final_score, &candidate.candidate.title),
+                ScoredMatch::new(idx as u32, final_score, &candidate.candidate.title)
+                    .with_priority(preferred),
                 pool_limit,
             );
         }
@@ -242,7 +217,7 @@ impl QueryEngine {
         let mut ranked = finalize_top_k(top);
 
         if normalized_query.chars().count() < RERANK_MIN_QUERY_CHARS {
-            return top_limit(ranked, limit);
+            return ranked;
         }
 
         // Stage 2: quality rerank only the leading window to keep latency bounded.
@@ -253,18 +228,12 @@ impl QueryEngine {
         for entry in ranked.iter_mut().take(rerank_count) {
             // Reuse the precomputed normalized title from IndexedCandidate rather
             // than re-normalizing here on every rerank.
-            let title_search = &self.candidates[entry.0 as usize].title_search;
-            entry.1 += fuzzy_quality_bonus_prepared(&prepared_query, title_search);
+            let title_search = &self.candidates[entry.idx as usize].title_search;
+            entry.score += fuzzy_quality_bonus_prepared(&prepared_query, title_search);
         }
 
-        ranked.sort_by(|a, b| {
-            b.1.cmp(&a.1).then_with(|| {
-                let title_a = &self.candidates[a.0 as usize].candidate.title;
-                let title_b = &self.candidates[b.0 as usize].candidate.title;
-                title_a.cmp(title_b)
-            })
-        });
-        top_limit(ranked, limit)
+        ranked.sort();
+        ranked
     }
 
     pub fn search_scored(&self, query: &str, limit: usize) -> Vec<(Candidate, i64)> {
@@ -273,21 +242,25 @@ impl QueryEngine {
         }
 
         let parsed_query = ParsedQuery::from_input(query);
-        let kind_filter = parsed_query.kind_filter.as_ref();
-
         let indices = if parsed_query.normalized_query.is_empty() {
-            self.search_empty_query(kind_filter, limit)
+            self.search_empty_query(parsed_query.scope, limit)
         } else if parsed_query.is_folder_path() {
             self.search_folder_path(&parsed_query.normalized_query, limit)
         } else {
-            self.search_text_query(&parsed_query.normalized_query, kind_filter, limit)
+            self.search_text_query(&parsed_query.normalized_query, parsed_query.scope, limit)
         };
 
         // Materialize Candidates only for the final top-K - the hot scoring loop
         // kept everything as (index, score) pairs to avoid per-push clones.
-        top_limit(indices, limit)
+        indices
             .into_iter()
-            .map(|(idx, score)| (self.candidates[idx as usize].candidate.clone(), score))
+            .take(limit)
+            .map(|entry| {
+                (
+                    self.candidates[entry.idx as usize].candidate.clone(),
+                    entry.score,
+                )
+            })
             .collect()
     }
 }
@@ -314,6 +287,97 @@ fn folder_path_score(terms: &[(&str, PreparedQuery<'_>)], path: &str) -> Option<
 mod tests {
     use super::QueryEngine;
     use lumio_indexing::{Candidate, CandidateKind};
+
+    #[test]
+    fn app_priority_survives_the_candidate_limit_and_keeps_app_relevance() {
+        let mut candidates = vec![
+            Candidate::new(
+                "app:prefix",
+                CandidateKind::App,
+                "Monitor Pro",
+                "/Applications/Monitor Pro.app",
+            ),
+            Candidate::new(
+                "app:contains",
+                CandidateKind::App,
+                "Desk Monitor",
+                "/Applications/Desk Monitor.app",
+            ),
+            Candidate::new(
+                "setting:monitor",
+                CandidateKind::App,
+                "Monitor",
+                "x-apple.systempreferences:monitor",
+            ),
+        ];
+        // Exact folders outrank fuzzy apps by score alone, even before reranking.
+        candidates.extend((0..100).map(|index| {
+            Candidate::new(
+                &format!("folder:{index}"),
+                CandidateKind::Folder,
+                "Monitor",
+                &format!("/Users/me/Documents/{index}/Monitor"),
+            )
+        }));
+        let engine = QueryEngine::new(candidates);
+        assert_eq!(engine.search("monitor", 1)[0].id, "app:prefix");
+        let rows = engine.search("monitor", 4);
+        assert_eq!(rows[0].id, "app:prefix");
+        assert_eq!(rows[1].id, "app:contains");
+        assert_eq!(rows[2].id, "setting:monitor");
+        assert_eq!(rows[3].kind, "folder");
+        assert_eq!(engine.search("d\"monitor", 1)[0].kind, "folder");
+        assert_eq!(engine.search("s\"monitor", 1)[0].id, "setting:monitor");
+    }
+
+    #[test]
+    fn bare_settings_queries_find_the_system_application_without_its_panes() {
+        let mut pane = Candidate::new(
+            "setting:privacy",
+            CandidateKind::App,
+            "Privacy",
+            "x-apple.systempreferences:privacy",
+        );
+        pane.subtitle = Some("System Settings settings privacy permissions".into());
+        let mut settings_app = Candidate::new(
+            "app:system-settings",
+            CandidateKind::App,
+            "系统设置",
+            "/System/Applications/System Settings.app",
+        );
+        settings_app.subtitle = Some("System Settings".into());
+        let engine = QueryEngine::new(vec![
+            pane,
+            settings_app,
+            Candidate::new(
+                "app:settings-manager",
+                CandidateKind::App,
+                "Settings Manager",
+                "/Applications/Settings Manager.app",
+            ),
+        ]);
+
+        for query in [
+            "settings",
+            "system settings",
+            "preferences",
+            "系统设置",
+            "系統設定",
+        ] {
+            let rows = engine.search(query, 10);
+            assert_eq!(rows[0].id, "app:system-settings", "{query}");
+            assert!(
+                !rows.iter().any(|row| row.id == "setting:privacy"),
+                "{query}"
+            );
+        }
+        assert_eq!(engine.search("sys", 10)[0].id, "app:system-settings");
+        assert_eq!(engine.search("s\"", 10)[0].id, "setting:privacy");
+        assert_eq!(
+            engine.search("privacy settings", 10)[0].id,
+            "setting:privacy"
+        );
+    }
 
     #[test]
     fn abbreviations_match_adjacent_folder_components_only() {
