@@ -363,6 +363,45 @@ mod tests {
     }
 
     #[test]
+    fn abbreviations_work_for_other_path_names_and_end_at_the_requested_level() {
+        let folder = |id, name, path| Candidate::new(id, CandidateKind::Folder, name, path);
+        let engine = QueryEngine::new(vec![
+            folder("telegrams", "Telegrams", "/Users/me/Downloads/Telegrams"),
+            folder("images", "Images", "/Users/me/Downloads/Telegrams/Images"),
+            folder(
+                "support",
+                "Application Support",
+                "/Users/me/Library/Application Support",
+            ),
+            folder("nvim", "nvim", "/Users/me/.config/nvim"),
+            folder("drafts", "drafts", "/Users/me/Projects/Lumio/drafts"),
+            folder(
+                "archived",
+                "drafts",
+                "/Users/me/Projects/Lumio/Archive/drafts",
+            ),
+        ]);
+
+        for (query, expected) in [
+            ("D/T", "telegrams"),
+            ("D/T/I", "images"),
+            (".c/n", "nvim"),
+            ("Pr/Lu/dr", "drafts"),
+        ] {
+            let results = engine.search(query, 20);
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                [expected],
+                "{query}"
+            );
+        }
+        assert_eq!(engine.search("L/AS", 20)[0].id, "support");
+    }
+
+    #[test]
     fn term_boundary_match_rejects_inner_substring() {
         assert!(!QueryEngine::has_term_boundary_match(
             "archive utility",

@@ -2,14 +2,14 @@
 
 ## Actions and folder addresses
 
-Select a result with the arrow keys and press **Tab** to open its action page. Choose an action with the arrow keys and press **Enter**. Common app actions include opening or switching to the app, opening a new instance and showing it in Finder.
+Select an app with the arrow keys and press **Tab** to open its action page. Choose an action with the arrow keys and press **Enter**. Common app actions include opening or switching to the app, opening a new instance and showing it in Finder.
 
 On the Finder action page, typing switches to folder results. Each result shows the directory address. **Enter** opens the selection in Finder, and **Open in Terminal** opens it in Terminal.
 
 | Input | Folder result |
 | --- | --- |
 | `Telegram` | Folders matching the name |
-| `Downloads/Telegram` or `D/T` | Folders matching consecutive path components |
+| `Downloads/Telegram` or `D/T` | Folders at the final matching path component |
 | `~/Library` | The local Library directory |
 | `~/.config/settings.json` | The existing file's parent directory |
 | `file:///Users/me/Documents` | The local Documents directory |

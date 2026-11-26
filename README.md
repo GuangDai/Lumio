@@ -71,12 +71,11 @@ Quit Lumio and move `/Applications/Lumio.app` to the Trash. To remove its settin
 | Open / run | `Enter` |
 | Show in Finder | `Cmd+F` |
 | Open the selected result's action page | `Tab` or `Cmd+K` |
-| Move to Trash | `Cmd+D` |
 | Hide the selected app from results | `Cmd+Shift+H` |
 | Use a launcher quick button | `Cmd+1` … `Cmd+3` (depends on button order) |
 | Search tag (`apps`, `folders`, `windows`…) | type keyword, then `Tab` |
 | Browse search tags | `Option+T` |
-| Cycle result filters | `Tab` / `Shift+Tab` |
+| Cycle result filters | `Shift+Tab` |
 | Pin / unpin a result | `Cmd+Shift+P` |
 | Command mode | `Cmd+/` |
 | Help | `Cmd+H` |

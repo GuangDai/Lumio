@@ -39,7 +39,7 @@ enum SpotlightMode: Equatable {
     /// Key hint in the panel footer for this mode.
     var footerHint: String {
         switch self {
-        case .search: "⏎ open   ⇥ filter   ⌘K actions"
+        case .search: "⏎ open   ⇥ details or scope   ⌘K actions"
         case .commandMenu: "⏎ enter command"
         case .process: "⏎ measure CPU   ⌘K actions"
         }
@@ -132,8 +132,9 @@ enum SpotlightModeRows {
     /// `:help` — prefixes, commands and keyboard shortcuts of this launcher.
     static func help(_ filter: String) -> [SpotlightItem] {
         let processTab = ("Processes tab", "Find and force quit running processes")
+        let changeDirectory = ("cd <folder>", "Open a folder in Finder from the main search")
         let commands = AppConstants.Launcher.commandCatalog.map { (":" + $0.id, SpotlightCommands.detail(for: $0)) }
-        let entries = [processTab] + commands + helpShortcuts + [("⌘F", "Show in \(FileManagerApp.name)")]
+        let entries = [processTab, changeDirectory] + commands + helpShortcuts + [("⌘F", "Show in \(FileManagerApp.name)")]
         let needle = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return entries
             .filter { needle.isEmpty || $0.0.lowercased().contains(needle) || $0.1.lowercased().contains(needle) }
@@ -147,13 +148,14 @@ enum SpotlightModeRows {
 
     private static let helpShortcuts: [(String, String)] = [
         ("⌘K", "Actions for the selected row"),
-        ("⇥ / ⇧⇥", "Next / previous filter"),
+        ("⇥", "Open app details or use a local search tag"),
+        ("⇧⇥", "Go back from app details or select the previous filter"),
         ("⌘1 … ⌘\(QuickBubbles.slotCount)", "Open a launcher quick button"),
-        ("⌘D", "Move to Trash · Empty Trash on the Trash pin"),
+        ("⌘T", "Open the selected folder in Terminal"),
         ("⌘H", "This help"),
         ("⌘⇧H", "Hide the selected app from results"),
         ("⌘/", "Open the last command"),
-        ("⌘⇧,", "Settings"),
-        ("Esc", "Close"),
+        ("⌘⇧Space", "Settings"),
+        ("Esc", "Go back from app details or close"),
     ]
 }
