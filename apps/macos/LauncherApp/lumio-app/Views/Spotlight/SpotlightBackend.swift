@@ -358,50 +358,52 @@ enum SpotlightBackend {
         }
     }
 
-    /// Resolves a typed absolute path to its folder, or to the enclosing folder of a file.
-    static func directFolder(for term: String, excluding: [String]) -> SpotlightItem? {
-        guard let folder = FolderAddressQuery.existingFolder(in: term),
-              isBrowsableFolder(at: folder, excluding: excluding)
-        else { return nil }
-        return folderRow(path: folder.path, name: FileManager.default.displayName(atPath: folder.path))
-    }
-
-    /// A trailing slash browses the live contents of one folder, including children beyond the index depth.
-    static func childFolders(
+    /// Completes a local address or lists the live children of a slash-terminated path.
+    static func pathFolders(
         for term: String, excluding: [String], within roots: [String] = [], selectedFolder: String? = nil
     ) async -> [SpotlightItem] {
-        let parentQuery = AppConstants.Launcher.QueryPrefix.folders + String(term.dropLast())
+        let literalAddress = FolderAddressQuery.isLiteralAddress(term)
+        let browsing = !literalAddress || FolderAddressQuery.requestsChildren(in: term)
+        let selected = selectedFolder.flatMap { path in
+            path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
+        }
         let hits = await SpotlightQueue.run(skipped: [FolderHit]()) { isCancelled in
             let including: (URL) -> Bool = { folder in
                 (roots.isEmpty || FileSearchPaths.isExcluded(folder.path, by: roots))
                     && Self.isBrowsableFolder(at: folder, excluding: excluding)
             }
-            let address: String
-            if FolderAddressQuery.requestsChildren(in: term) {
-                address = term
+            let folders: [URL]
+            if literalAddress {
+                folders = FolderAddressQuery.matchingFolders(
+                    in: term, selectedFolder: selected, including: including, isCancelled: isCancelled
+                )
             } else {
                 guard !isCancelled() else { return [] }
                 let parent: String
-                if let selectedFolder, selectedFolder.hasPrefix("/"), including(URL(fileURLWithPath: selectedFolder)) {
-                    parent = selectedFolder
+                if let selected, including(selected) {
+                    parent = selected.path
                 } else {
+                    let parentQuery = AppConstants.Launcher.QueryPrefix.folders + String(term.dropLast())
                     guard let match = EngineBridge.shared.search(query: parentQuery, limit: Self.resultLimit).first(where: { row in
                         row.kind == .folder && row.path.hasPrefix("/") && including(URL(fileURLWithPath: row.path))
                     }) else { return [] }
                     parent = match.path
                 }
-                address = parent.hasSuffix("/") ? parent : parent + "/"
+                let address = parent.hasSuffix("/") ? parent : parent + "/"
+                folders = FolderAddressQuery.immediateSubfolders(in: address, including: including, isCancelled: isCancelled)
             }
 
-            let children = FolderAddressQuery.immediateSubfolders(in: address, including: including, isCancelled: isCancelled)
             guard !isCancelled() else { return [] }
-            let rows = children.map { folder in
+            var rows = folders.map { folder in
                 FolderHit(path: folder.path, name: FileManager.default.displayName(atPath: folder.path), date: nil)
             }
-            return Array(rows.sorted { first, second in
-                let order = first.name.localizedStandardCompare(second.name)
-                return order == .orderedSame ? first.path < second.path : order == .orderedAscending
-            }.prefix(Self.resultLimit))
+            if browsing {
+                rows.sort { first, second in
+                    let order = first.name.localizedStandardCompare(second.name)
+                    return order == .orderedSame ? first.path < second.path : order == .orderedAscending
+                }
+            }
+            return Array(rows.prefix(Self.resultLimit))
         }
         return hits.map { folderRow(path: $0.path, name: $0.name) }
     }

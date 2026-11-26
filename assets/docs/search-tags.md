@@ -2,7 +2,7 @@
 
 ## Actions and folder addresses
 
-Select an app with the arrow keys and press **Tab** to open its action page. Choose an action with the arrow keys and press **Enter**. Common app actions include opening or switching to the app, opening a new instance and showing it in Finder.
+Select an app or folder with the arrow keys and press **Tab** to open its action page. Choose an action with the arrow keys and press **Enter**. Common app actions include opening or switching to the app, opening a new instance and showing it in Finder.
 
 On the Finder action page, typing switches to folder results. Each result shows the directory address. **Enter** opens the selection in Finder, and **Open in Terminal** opens it in Terminal.
 
@@ -15,7 +15,7 @@ On the Finder action page, typing switches to folder results. Each result shows 
 | `~/.config/settings.json` | The existing file's parent directory |
 | `file:///Users/me/Documents` | The local Documents directory |
 
-From the main search field, **cd** followed by a folder query, such as `cd D/T`, also opens the directory flow. Paste absolute or home-relative paths as written, including paths containing spaces.
+From the main search field, `:cd` followed by a folder query, such as `:cd D/T`, also opens the directory flow. Paste absolute or home-relative paths as written, including paths containing spaces.
 
 The default index includes the home directory and the Desktop, Documents, Downloads and Library roots. Hidden directories, including names that start with a dot, are eligible. Settings ▸ Indexing lets you change the roots, depth, limit and exclusions.
 

@@ -4,9 +4,8 @@ import XCTest
 /// Parity tests for the process-finder ranking, mirroring the Rust reference
 /// tests in `apps/linows/src-tauri/src/process.rs`. The fuzzy name score is
 /// injected as a lightweight subsequence stub: the real `core/matching` DP is
-/// already covered by the Rust crate's own tests, and reused verbatim over FFI,
-/// so what needs testing here is the numeric-tier layering and the apps-first
-/// kill ordering - both pure Swift.
+/// covered by the Rust crate's own tests and reused over FFI. These tests cover
+/// ranking by port, PID and name.
 final class ProcessScoringTests: XCTestCase {
     /// Deterministic stand-in for `lumio_fuzzy_score`: a positive score when
     /// `query` is a subsequence of `title`, else nil. Both are already
@@ -81,42 +80,5 @@ final class ProcessScoringTests: XCTestCase {
         // A name containing the digits still fuzzy-matches even for numeric queries.
         let r = row("proc3000", 99, [])
         XCTAssertNotNil(score(r, "3000"))
-    }
-
-    // MARK: - rank_kill_targets parity
-
-    func testKillTargetsRankAppsBeforeProcesses() {
-        let apps = [(name: "Firefox", pid: Int32(100))]
-        // pid 100 is the app's own PID (deduped); 200 is a stray "firefox" proc.
-        let procs = [row("firefox", 100, []), row("firefox", 200, [])]
-        let out = ProcessScoring.rankKillTargets(
-            apps: apps, procs: procs, query: "fire", fuzzy: stubFuzzy("fire"))
-        XCTAssertEqual(out.count, 2, "app + the non-dup process")
-        XCTAssertTrue(out[0].isApp, "app ranks first")
-        XCTAssertEqual(out[0].pid, 100)
-        XCTAssertFalse(out[1].isApp)
-        XCTAssertEqual(out[1].pid, 200)
-    }
-
-    func testKillTargetsNonMatchExcluded() {
-        let out = ProcessScoring.rankKillTargets(
-            apps: [(name: "Firefox", pid: 1)], procs: [row("bash", 2, [])],
-            query: "zzq", fuzzy: stubFuzzy("zzq"))
-        XCTAssertTrue(out.isEmpty)
-    }
-
-    func testKillTargetsMatchByPortAndPID() {
-        let apps = [(name: "Firefox", pid: Int32(1))]
-        let procs = [row("node", 4321, [3000]), row("bash", 900, [])]
-        // A bare port number finds its owner via the process rows.
-        let byPort = ProcessScoring.rankKillTargets(
-            apps: apps, procs: procs, query: "3000", fuzzy: stubFuzzy("3000"))
-        XCTAssertEqual(byPort.count, 1)
-        XCTAssertEqual(byPort[0].pid, 4321)
-        // A bare PID finds the process directly.
-        let byPID = ProcessScoring.rankKillTargets(
-            apps: apps, procs: procs, query: "900", fuzzy: stubFuzzy("900"))
-        XCTAssertEqual(byPID.count, 1)
-        XCTAssertEqual(byPID[0].pid, 900)
     }
 }

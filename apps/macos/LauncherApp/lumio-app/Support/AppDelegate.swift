@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (hidden) so LauncherView is always mounted and the existing
     // .lookToggleWindowRequested → toggleWindowVisibility() path just works.
     private var launcherWindow: NSWindow?
+    private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var settingsObserver: NSObjectProtocol?
     private var hotKeyObservers: [NSObjectProtocol] = []
 
@@ -43,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // would never create a WindowGroup window. With the view mounted, its
         // .lookToggleWindowRequested observer is live and Option+Space toggles it.
         makeLauncherWindow()
+        makeStatusItem()
 
         MemoryTrim.watchMemoryPressure()
 
@@ -61,6 +64,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             AccessibilityDoctor.shared.warnIfStale()
         }
+    }
+
+    private func makeStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        guard let button = item.button else { return }
+        if let icon = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Lumio") {
+            icon.isTemplate = true
+            button.image = icon
+        } else {
+            button.title = "Lumio"
+        }
+        button.setAccessibilityLabel("Lumio")
+        button.toolTip = "Lumio"
+        button.target = self
+        button.action = #selector(statusItemPressed(_:))
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+        let isChinese = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let menu = NSMenu(title: "Lumio")
+        let show = menu.addItem(withTitle: isChinese ? "显示" : "Show", action: #selector(showLauncher), keyEquivalent: "")
+        show.target = self
+        let settings = menu.addItem(withTitle: isChinese ? "设置" : "Settings", action: #selector(openSettings(_:)), keyEquivalent: ",")
+        settings.target = self
+        settings.keyEquivalentModifierMask = [.command, .shift]
+        let quit = menu.addItem(withTitle: isChinese ? "退出" : "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        quit.keyEquivalentModifierMask = [.command, .option]
+        statusMenu = menu
+        statusItem = item
+    }
+
+    @objc private func statusItemPressed(_ button: NSStatusBarButton) {
+        if let event = NSApp.currentEvent, let statusMenu,
+           event.type == .rightMouseUp || (event.type == .leftMouseUp && event.modifierFlags.contains(.control)) {
+            let bottom = button.isFlipped ? button.bounds.maxY : button.bounds.minY
+            button.highlight(true)
+            defer { button.highlight(false) }
+            statusMenu.popUp(positioning: nil, at: NSPoint(x: button.bounds.minX, y: bottom), in: button)
+        } else {
+            showLauncher()
+        }
+    }
+
+    @objc private func showLauncher() {
+        NotificationCenter.default.post(name: .lookActivateLauncherRequested, object: nil)
+    }
+
+    @objc private func openSettings(_ sender: NSMenuItem) {
+        SettingsWindowController.shared.show()
     }
 
     /// Shortcuts changed in Settings take effect right away; recording one pauses them all.

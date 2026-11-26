@@ -237,10 +237,14 @@ extension ThemeSettingsView {
             KeepSearchSettingsRow()
             SettingsDivider()
             LearningSettingsRow()
+            SettingsDivider()
+            HiddenApplicationSettingsRow()
         }
         SettingsSectionTitle("Folders")
         SettingsCard {
             FileManagerSettingsRow()
+            SettingsDivider()
+            TerminalSettingsSection()
             SettingsDivider()
             ExternalDrivesSettingsRow()
         }

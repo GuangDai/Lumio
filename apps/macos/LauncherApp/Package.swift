@@ -45,6 +45,7 @@ let package = Package(
                 "Support/Launcher/SpotlightFolders.swift",
                 "Support/Launcher/SpotlightQueue.swift",
                 "Support/Launcher/SystemCommands.swift",
+                "Support/Launcher/TerminalApp.swift",
                 "Support/Launcher/TrashService.swift",
                 "Support/MemoryTrim.swift",
                 "Support/ThemeStore+Appearance.swift",

@@ -53,20 +53,6 @@ enum FileManagerApp {
         }
     }
 
-    @discardableResult
-    static func openInTerminal(_ path: String) -> Bool {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue,
-              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
-        else { return false }
-
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
-        NSWorkspace.shared.open([URL(fileURLWithPath: path, isDirectory: true)],
-                                withApplicationAt: terminal, configuration: config, completionHandler: nil)
-        return true
-    }
-
     /// Shows an app or folder selected in its parent folder.
     static func reveal(_ path: String) {
         let url = URL(fileURLWithPath: path)

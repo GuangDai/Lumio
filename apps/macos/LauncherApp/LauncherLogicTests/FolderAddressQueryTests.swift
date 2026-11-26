@@ -4,11 +4,12 @@ import XCTest
 
 final class FolderAddressQueryTests: XCTestCase {
     func testChangeDirectoryCommandPreservesPathSegments() {
-        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: "  cd\tD/T  "), "D/T")
-        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: "cd '~/My Projects'"), "~/My Projects")
-        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: "cd '~/My Projects/'"), "~/My Projects/")
-        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: "cd"), "")
-        XCTAssertNil(FolderAddressQuery.changeDirectoryArgument(in: "cdrive"))
+        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: "  :CD\tD/T  "), "D/T")
+        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: ":cd '~/My Projects'"), "~/My Projects")
+        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: ":cd '~/My Projects/'"), "~/My Projects/")
+        XCTAssertEqual(FolderAddressQuery.changeDirectoryArgument(in: ":cd"), "")
+        XCTAssertNil(FolderAddressQuery.changeDirectoryArgument(in: "cd ~/Library"))
+        XCTAssertNil(FolderAddressQuery.changeDirectoryArgument(in: ":cdrive"))
     }
 
     func testRecognizesLocalAddressSyntaxSeparatelyFromFolderQueries() {
@@ -52,6 +53,63 @@ final class FolderAddressQueryTests: XCTestCase {
         }
     }
 
+    func testPartialLiteralAddressesMatchEachComponentWithinItsParent() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        for path in ["Home/Projects/Nested", "Host", "Workshop", "Elsewhere/Home", "HoTool.app", ".hidden",
+                     "Users/hp/Downloads/Telegram", "Elsewhere/hp"] {
+            try fm.createDirectory(at: root.appendingPathComponent(path), withIntermediateDirectories: true)
+        }
+        let file = root.appendingPathComponent("Home notes.txt")
+        try Data().write(to: file)
+
+        func matches(_ suffix: String) -> [URL] {
+            FolderAddressQuery.matchingFolders(in: root.path + suffix, including: isBrowsable, isCancelled: { false })
+        }
+
+        XCTAssertEqual(matches("/ho").map(\.lastPathComponent), ["Home", "Host", "Workshop"])
+        XCTAssertEqual(matches("/Users/h").map(\.lastPathComponent), ["hp"])
+        XCTAssertEqual(matches("/Us/h/D/T").map(\.lastPathComponent), ["Telegram"])
+        XCTAssertEqual(matches("/hO/pj").map(\.lastPathComponent), ["Projects"])
+        XCTAssertEqual(matches("/.hi").map(\.lastPathComponent), [".hidden"])
+        XCTAssertEqual(matches("/Home notes.txt").map(\.path), [root.standardizedFileURL.path])
+        XCTAssertEqual(matches("/Home").map(\.lastPathComponent), ["Home"])
+        XCTAssertTrue(matches("/Home notes.txt/").isEmpty)
+
+        let excluded = FolderAddressQuery.matchingFolders(
+            in: root.path + "/ho", including: { self.isBrowsable($0) && $0.lastPathComponent != "Home" },
+            isCancelled: { false }
+        )
+        XCTAssertEqual(excluded.map(\.lastPathComponent), ["Host", "Workshop"])
+        XCTAssertTrue(FolderAddressQuery.matchingFolders(
+            in: root.path + "/ho", including: isBrowsable, isCancelled: { true }
+        ).isEmpty)
+    }
+
+    func testTrailingSlashExpandsOnlyTheExactOrSelectedCompletion() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        for path in ["Home Garden/Projects/Nested", "Home Garden/.cache", "Host/Status"] {
+            try fm.createDirectory(at: root.appendingPathComponent(path), withIntermediateDirectories: true)
+        }
+
+        func matches(_ address: String, selected: URL? = nil) -> Set<String> {
+            Set(FolderAddressQuery.matchingFolders(
+                in: address, selectedFolder: selected, including: isBrowsable, isCancelled: { false }
+            ).map(\.lastPathComponent))
+        }
+
+        let host = root.appendingPathComponent("Host", isDirectory: true)
+        XCTAssertEqual(matches(root.path + "/ho/"), ["Projects", ".cache"])
+        XCTAssertEqual(matches(root.path + "/ho/", selected: host), ["Status"])
+        XCTAssertEqual(matches(root.path + "/Home Garden/", selected: host), ["Projects", ".cache"])
+        XCTAssertEqual(matches(root.absoluteString + "Home%20G"), ["Home Garden"])
+    }
+
     func testTrailingSlashListsJustImmediateBrowsableFolders() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -66,11 +124,6 @@ final class FolderAddressQueryTests: XCTestCase {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         try Data().write(to: file)
-
-        let isBrowsable: (URL) -> Bool = { url in
-            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
-            return values?.isDirectory == true && values?.isPackage != true && url.pathExtension != "app"
-        }
 
         let folders = FolderAddressQuery.immediateSubfolders(
             in: root.path + "/", including: isBrowsable, isCancelled: { false }
@@ -90,5 +143,11 @@ final class FolderAddressQueryTests: XCTestCase {
         XCTAssertTrue(FolderAddressQuery.immediateSubfolders(
             in: root.path + "/", including: isBrowsable, isCancelled: { true }
         ).isEmpty)
+    }
+
+    private func isBrowsable(_ url: URL) -> Bool {
+        let resolved = url.resolvingSymlinksInPath()
+        let values = try? resolved.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+        return values?.isDirectory == true && values?.isPackage != true && resolved.pathExtension != "app"
     }
 }

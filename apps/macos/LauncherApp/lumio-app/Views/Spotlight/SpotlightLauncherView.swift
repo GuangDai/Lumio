@@ -54,7 +54,9 @@ struct SpotlightLauncherView: View {
     @State private var scope: SpotlightItem?
     /// Query before opening actions — restored on exit.
     @State private var scopeReturnQuery = ""
-    /// Non-nil while the selected application's details page is open.
+    /// Finder's search page when one of its folder results is showing details.
+    @State private var finderPageReturn: (item: SpotlightItem, actionID: String, launcherQuery: String)?
+    /// Non-nil while the selected result's details page is open.
     @State private var selectedPreviewActionID: String?
     /// Text left in the field when the launcher was dismissed; restored on the next open.
     @State private var keptQuery = ""
@@ -109,12 +111,10 @@ struct SpotlightLauncherView: View {
     @State private var mouseGate = MouseGate()
 
     @StateObject private var processModel = ProcessFinderModel()
-    /// Command currently open (`:kill`, `:emptytrash`, `:help`). nil = normal search.
+    /// Command currently open. nil = normal search.
     @State private var activeCommand: String?
     /// ⌘/ reopens the most recently used command, like the legacy launcher.
-    @State private var lastCommand = SpotlightCommands.kill
-    /// :kill — the first Enter only "arms" this process; the second Enter kills it.
-    @State private var armedKillPID: Int32?
+    @State private var lastCommand = SpotlightCommands.changeDirectory
     /// Destructive actions (Move to Trash, Empty Trash, Hide from Results) need a second Enter:
     /// the key of the armed one.
     @State private var armedConfirm: String?
@@ -171,7 +171,11 @@ struct SpotlightLauncherView: View {
     }
 
     private var targetPanelHeight: CGFloat {
-        Metric.barHeight + (expanded ? SpotlightSpec.lowerHeight(rows: rowSlots) : 0)
+        Metric.barHeight + (expanded ? lowerPanelHeight : 0)
+    }
+
+    private var lowerPanelHeight: CGFloat {
+        SpotlightSpec.lowerHeight(rows: rowSlots, includesPillHeight: showsActionDetails || !kinds.isEmpty)
     }
 
     /// Home: the empty field, showing pinned items and then suggestions as the usual list.
@@ -268,10 +272,14 @@ struct SpotlightLauncherView: View {
         }
         // Entering / leaving actions (⌘K) or a search tag (⇥ / ⌫) re-runs the search.
         .onChange(of: chipKey) {
+            if scope == nil { finderPageReturn = nil }
             folderToExpand = nil
             refresh()
         }
         .onChange(of: themeStore.excludedFolderPaths) {
+            if isOpen, !dismissing { refresh() }
+        }
+        .onChange(of: themeStore.excludedApplicationNames) {
             if isOpen, !dismissing { refresh() }
         }
         .onChange(of: browse) {
@@ -339,7 +347,6 @@ struct SpotlightLauncherView: View {
             processModel: processModel,
             onCommandChange: { refresh() },
             onPreviewChange: {
-                armedKillPID = nil
                 armedConfirm = nil
                 // Processes: load details (memory, user, command line) on selection.
                 if let item = previewItem, item.kind == .process, let pid = item.pid {
@@ -348,7 +355,7 @@ struct SpotlightLauncherView: View {
             },
             // Rebuild the rows when the process snapshot arrives.
             onProcesses: {
-                if activeCommand == SpotlightCommands.kill || (scope == nil && activeCommand == nil && inProcessTab) {
+                if scope == nil, activeCommand == nil, inProcessTab {
                     refresh()
                 }
             }
@@ -499,7 +506,7 @@ struct SpotlightLauncherView: View {
             footer
                 .frame(height: Metric.footerHeight)
         }
-        .frame(height: SpotlightSpec.lowerHeight(rows: rowSlots), alignment: .top)
+        .frame(height: lowerPanelHeight, alignment: .top)
         .opacity(expanded ? 1 : 0)
         .animation(motion(expanded ? SpotlightMotion.contentIn : SpotlightMotion.contentOut), value: expanded)
         .allowsHitTesting(expanded)
@@ -513,20 +520,23 @@ struct SpotlightLauncherView: View {
                 .frame(height: Metric.pillsHeight + SpotlightSpec.listHeight(rows: rowSlots))
                 .padding(.top, Metric.lowerTopInset)
         } else {
-            pillsRow
-                .frame(height: Metric.pillsHeight)
-                .padding(.top, Metric.lowerTopInset)
-            HStack(spacing: 0) {
-                listView
-                    .frame(width: listPaneWidth)
-                Rectangle()
-                    .fill(palette.divider)
-                    .frame(width: 1)
-                    .padding(.vertical, 8)
-                previewPane
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                if !kinds.isEmpty {
+                    pillsRow.frame(height: Metric.pillsHeight)
+                }
+                HStack(spacing: 0) {
+                    listView
+                        .frame(width: listPaneWidth)
+                    Rectangle()
+                        .fill(palette.divider)
+                        .frame(width: 1)
+                        .padding(.vertical, 8)
+                    previewPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(height: SpotlightSpec.listHeight(rows: rowSlots))
             }
-            .frame(height: SpotlightSpec.listHeight(rows: rowSlots))
+            .padding(.top, Metric.lowerTopInset)
         }
     }
 
@@ -552,65 +562,15 @@ struct SpotlightLauncherView: View {
     }
 
     private var pillsRow: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Metric.pillGap) {
-                    pillButton(label: "All", active: filter == nil && !inProcessTab) {
-                        if inProcessTab { leaveProcessTab() } else { filter = nil }
-                    }
-                        .id(Self.allPillID)
-                    ForEach(kinds) { kind in
-                        pillButton(label: kind.label, active: filter == kind) {
-                            filter = (filter == kind) ? nil : kind
-                        }
-                        .id(kind.rawValue)
-                    }
-                    if processTabVisible || inProcessTab {
-                        pillButton(label: SpotlightKind.process.label, active: inProcessTab) {
-                            toggleBrowse(.process)
-                        }
-                        .id(SpotlightKind.process.rawValue)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Metric.pillGap) {
+                ForEach(kinds) { kind in
+                    pillButton(label: kind.label, active: filter == kind) {
+                        filter = (filter == kind) ? nil : kind
                     }
                 }
-                .padding(.horizontal, 14)
             }
-            // Tab can land on a pill that is scrolled out of view: bring it in.
-            .onChange(of: filter) { _, kind in
-                withAnimation(motion(SpotlightMotion.chip)) {
-                    proxy.scrollTo(kind?.rawValue ?? Self.allPillID)
-                }
-            }
-            .onChange(of: browse) { _, tab in
-                let id = tab == .process ? SpotlightKind.process.rawValue : Self.allPillID
-                withAnimation(motion(SpotlightMotion.chip)) {
-                    proxy.scrollTo(id)
-                }
-            }
-        }
-    }
-
-    private static let allPillID = "pill-all"
-
-    private var processTabVisible: Bool {
-        !themeStore.settings.hiddenTabs.contains(SpotlightKind.process.rawValue)
-    }
-
-    /// Tab / Shift+Tab cycles through the result filters and the Processes tab.
-    private func cycleFilter(_ step: Int) {
-        // Only the group pills the user can actually see. With the field emptied the panel is
-        // collapsed but `all` still holds the old results (kept so they fade out), and their
-        // groups would otherwise be invisible stops: Tab seemed to do nothing for a few presses.
-        let groups = expanded && !inProcessTab ? kinds : []
-        var options: [SpotlightKind?] = [nil] + groups
-        if processTabVisible { options.append(.process) }
-        let current = inProcessTab ? (options.firstIndex(of: browse) ?? 0) : (options.firstIndex(of: filter) ?? 0)
-        let next = options[(current + step + options.count) % options.count]
-        if next == .process {
-            filter = nil
-            withAnimation(motion(SpotlightMotion.chip)) { scope = nil; tag = nil; browse = .process }
-        } else {
-            if inProcessTab { leaveProcessTab() }
-            filter = next
+            .padding(.horizontal, 14)
         }
     }
 
@@ -626,10 +586,6 @@ struct SpotlightLauncherView: View {
         }
         query = text
         focusField()
-    }
-
-    private func leaveProcessTab() {
-        withAnimation(motion(SpotlightMotion.chip)) { browse = nil }
     }
 
     private func pillButton(label: String, active: Bool, action: @escaping () -> Void) -> some View {
@@ -709,7 +665,6 @@ struct SpotlightLauncherView: View {
         SpotlightRow(
             item: item,
             selected: selected,
-            armed: armedKillPID != nil && item.pid == armedKillPID,
             running: item.kind == .app && (item.iconPath ?? item.target).map(runningApps.contains) == true,
             highlight: highlightWords(for: item),
             palette: palette,
@@ -775,9 +730,12 @@ struct SpotlightLauncherView: View {
         }
         switch activeCommand {
         case Self.tagsCommand: return "↑↓ select   ⏎ use tag   ⌫ leave"
-        case SpotlightCommands.kill: return "⏎ select, ⏎ again to force quit"
+        case SpotlightCommands.activeWindows: return "↑↓ select   ⏎ switch window"
         case SpotlightCommands.emptyTrash: return "⏎ twice to empty   esc cancel"
         default: break
+        }
+        if FolderAddressQuery.changeDirectoryArgument(in: query) != nil {
+            return "↑↓ select   ⏎ open in Finder   ⌘T open in Terminal"
         }
         let mode = browse.map { SpotlightMode.forTab($0, query: query) ?? .search } ?? SpotlightMode.parse(query)
         return "↑↓ select   " + mode.footerHint
@@ -835,7 +793,7 @@ struct SpotlightLauncherView: View {
         }
         if let activeCommand {
             switch activeCommand {
-            case SpotlightCommands.kill: publish(SpotlightModeRows.killTargets(processModel, term: query))
+            case SpotlightCommands.activeWindows: publishWindowSearch(query, includeMinimized: false)
             case SpotlightCommands.emptyTrash: publish(SpotlightModeRows.emptyTrash(itemCount: trashCount))
             case SpotlightCommands.help: publish(SpotlightModeRows.help(query))
             case Self.tagsCommand: publish(SpotlightBackend.tagBrowserRows(query))
@@ -845,9 +803,10 @@ struct SpotlightLauncherView: View {
         }
         let launch = SpotlightMode.tab(fromLaunchQuery: query)
         if browse == nil, tag == nil, let argument = FolderAddressQuery.changeDirectoryArgument(in: query) {
+            lastCommand = SpotlightCommands.changeDirectory
             if argument.isEmpty {
                 publish([SpotlightItem(
-                    id: "cd|hint", name: "Type a directory after cd", kind: .help,
+                    id: "cd|hint", name: "Type a directory after :cd", kind: .help,
                     colors: "#a7aeb8,#5e6670", symbol: "folder"
                 )])
             } else {
@@ -889,10 +848,6 @@ struct SpotlightLauncherView: View {
         let allowsFolders = request.browse == nil || request.browse == .folder
         let excludedFolders = themeStore.excludedFolderPaths
         let literalAddress = allowsFolders && FolderAddressQuery.isLiteralAddress(term)
-        if literalAddress, !FolderAddressQuery.requestsChildren(in: term) {
-            publish(SpotlightBackend.directFolder(for: term, excluding: excludedFolders).map { [$0] } ?? [])
-            return
-        }
         let selectedFolder = folderToExpand
         // First keystroke searches immediately; further typing waits a short beat.
         let debounce: Duration = expanded ? SpotlightBackend.debounce : .zero
@@ -907,10 +862,10 @@ struct SpotlightLauncherView: View {
                 && !term.lowercased().hasPrefix(AppConstants.Launcher.QueryPrefix.apps)
                 && (request.browse == .folder || EngineBridge.shared.classifyURL(query: term) == nil)
             if literalAddress || (relativePath && term.hasSuffix("/")) {
-                let children = await SpotlightBackend.childFolders(for: term, excluding: excludedFolders, selectedFolder: selectedFolder)
+                let folders = await SpotlightBackend.pathFolders(for: term, excluding: excludedFolders, selectedFolder: selectedFolder)
                 guard !Task.isCancelled else { return }
                 searchTask = nil
-                publish(children)
+                publish(folders)
                 return
             }
             let coreRequest = relativePath ? SpotlightRequest(text: term, browse: .folder) : request
@@ -1008,12 +963,10 @@ struct SpotlightLauncherView: View {
             }
             if let folderScope = tag.folders {
                 let rows: [SpotlightItem]
-                if FolderAddressQuery.requestsChildren(in: term) {
-                    rows = await SpotlightBackend.childFolders(for: term, excluding: excludedFolders)
-                } else if FolderAddressQuery.isLiteralAddress(term) {
-                    rows = SpotlightBackend.directFolder(for: term, excluding: excludedFolders).map { [$0] } ?? []
+                if FolderAddressQuery.isLiteralAddress(term) {
+                    rows = await SpotlightBackend.pathFolders(for: term, excluding: excludedFolders, selectedFolder: selectedFolder)
                 } else if term.hasSuffix("/") {
-                    rows = await SpotlightBackend.childFolders(
+                    rows = await SpotlightBackend.pathFolders(
                         for: term, excluding: excludedFolders, within: folderScope.folders, selectedFolder: selectedFolder
                     )
                 } else if term.contains("/") {
@@ -1041,32 +994,8 @@ struct SpotlightLauncherView: View {
                 return
             }
             if tag.windows {
-                // `windows` ⇥: every open window, or the ones matching the text.
                 searchTask = nil
-                guard OpenWindows.isTrusted else {
-                    // Off or stale? Word the row for what was last found, then look again.
-                    let stale: Bool = if case .stale = AccessibilityDoctor.shared.lastState { true } else { false }
-                    publish([SpotlightItem(
-                        id: Self.windowsBlockedRow,
-                        name: stale ? "The Accessibility permission has gone stale"
-                            : "Window search needs the Accessibility permission",
-                        kind: .setting, colors: stale ? "#ff8a80,#d6453a" : "#ffb36e,#f06a2e",
-                        meta: stale ? "⏎ see what happened and reset it" : "⏎ check it and turn it on for Lumio",
-                        target: OpenWindows.settingsURL, symbol: stale ? "exclamationmark.lock.fill" : "lock.fill"
-                    )])
-                    if AccessibilityDoctor.shared.lastState == nil {
-                        AccessibilityDoctor.shared.check { _ in
-                            if isOpen, !dismissing, self.tag?.windows == true { refresh() }
-                        }
-                    }
-                    return
-                }
-                let rows = OpenWindows.shared.search(term, limit: SpotlightBackend.resultLimit)
-                    .map(SpotlightBackend.item(from:))
-                publish(rows.isEmpty ? [SpotlightItem(
-                    id: "tag|empty", name: term.isEmpty ? "No open windows found" : "No window matches “\(term)”",
-                    kind: .help, colors: "#a7aeb8,#5e6670", meta: tag.name, symbol: tag.symbol
-                )] : rows)
+                publishWindowSearch(term, includeMinimized: true)
                 return
             }
             if tag.settingsOnly {
@@ -1119,6 +1048,38 @@ struct SpotlightLauncherView: View {
         }
     }
 
+    private var inWindowSearch: Bool { tag?.windows == true || activeCommand == SpotlightCommands.activeWindows }
+
+    private func publishWindowSearch(_ query: String, includeMinimized: Bool) {
+        guard OpenWindows.isTrusted else {
+            let stale: Bool = if case .stale = AccessibilityDoctor.shared.lastState { true } else { false }
+            publish([SpotlightItem(
+                id: Self.windowsBlockedRow,
+                name: stale ? "The Accessibility permission has gone stale" : "Window search needs the Accessibility permission",
+                kind: .setting, colors: stale ? "#ff8a80,#d6453a" : "#ffb36e,#f06a2e",
+                meta: stale ? "⏎ see what happened and reset it" : "⏎ check it and turn it on for Lumio",
+                target: OpenWindows.settingsURL, symbol: stale ? "exclamationmark.lock.fill" : "lock.fill"
+            )])
+            if AccessibilityDoctor.shared.lastState == nil {
+                AccessibilityDoctor.shared.check { _ in
+                    if isOpen, !dismissing, inWindowSearch { refresh() }
+                }
+            }
+            return
+        }
+
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = includeMinimized ? SpotlightBackend.resultLimit : Int.max
+        let rows = OpenWindows.shared.search(term, limit: limit, includeMinimized: includeMinimized)
+            .map(SpotlightBackend.item(from:))
+            .filter(isVisibleAppResult)
+        let emptyMessage = includeMinimized ? "No open windows found" : "No active windows found"
+        publish(rows.isEmpty ? [SpotlightItem(
+            id: "windows|empty", name: term.isEmpty ? emptyMessage : "No window matches “\(term)”",
+            kind: .help, colors: "#a7aeb8,#5e6670", symbol: "macwindow"
+        )] : rows)
+    }
+
     /// Empty field: recently used apps and pins, so ⏎ can open a result
     /// before you type. Off with `suggestions_on_open=false`.
     private func refreshSuggestions() {
@@ -1139,7 +1100,7 @@ struct SpotlightLauncherView: View {
             let suggested = SpotlightBackend.suggestionRows(apps: recent)
                 .filter { !pinnedTargets.contains(($0.target ?? "").lowercased()) }
             let rows = pinned + suggested
-            guard !rows.isEmpty else {
+            guard rows.contains(where: isVisibleAppResult) else {
                 showingSuggestions = false
                 if expanded { setExpanded(false) }
                 return
@@ -1174,8 +1135,6 @@ struct SpotlightLauncherView: View {
     /// The local browser results associated with the selected item.
     private static func contextTag(for item: SpotlightItem) -> SearchTag? {
         switch item.kind {
-        case .folder:
-            return item.target.map(SearchTag.folder)
         case .tab, .url:
             guard let target = item.tab?.url ?? item.target,
                   let host = URLComponents(string: target)?.host, target.hasPrefix("http")
@@ -1191,7 +1150,7 @@ struct SpotlightLauncherView: View {
     }
 
     private var tabHint: String? {
-        guard expanded, isOpen, scope == nil else { return nil }
+        guard expanded, isOpen, scope == nil || showsFinderResults else { return nil }
         if let item = previewItem, Self.isFinder(item) { return "press TAB for Finder" }
         if let candidate = tagCandidate() {
             var name = candidate.tag.name
@@ -1199,7 +1158,7 @@ struct SpotlightLauncherView: View {
             if candidate.tag.mode != nil { return "press TAB for \(name)" }
             return "press TAB to filter by \(name)"
         }
-        if let item = previewItem, item.kind == .app, !previewActions(for: item).isEmpty {
+        if let item = previewItem, supportsActionPage(item), !previewActions(for: item).isEmpty {
             return "press TAB for details"
         }
         return nil
@@ -1365,7 +1324,7 @@ struct SpotlightLauncherView: View {
             guard let path = item.target else { return [] }
             return [
                 PreviewAction(
-                    id: "open", label: opensInFinder(for: query) ? "Open in Finder" : "Open Folder",
+                    id: "open", label: opensInFinder(for: actionQuery) ? "Open in Finder" : "Open Folder",
                     symbol: "folder", shortcut: "⏎"
                 ) { run(item) },
                 PreviewAction(id: "terminal", label: "Open in Terminal", symbol: "terminal", shortcut: "⌘T") {
@@ -1374,7 +1333,7 @@ struct SpotlightLauncherView: View {
                 PreviewAction(id: "reveal", label: "Show in \(manager)", symbol: "arrow.up.forward.app", shortcut: "⌘F") {
                     finish(SpotlightOpener.perform(.reveal, on: item))
                 },
-                PreviewAction(id: "subfolders", label: "Browse Subfolders", symbol: "folder.badge.plus", shortcut: "⇥") {
+                PreviewAction(id: "subfolders", label: "Browse Subfolders", symbol: "folder.badge.plus") {
                     lockTag(.folder(path), rest: "")
                 },
                 pinAction(for: item),
@@ -1410,8 +1369,9 @@ struct SpotlightLauncherView: View {
         case .search:
             return false
         case .commandMenu(let filter):
-            // `:kill chrome` (with a space) goes straight into the command, like the legacy launcher.
-            if let trigger = SpotlightCommands.inlineTrigger(filter) {
+            if filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == SpotlightCommands.activeWindows {
+                enterCommand(SpotlightCommands.activeWindows)
+            } else if let trigger = SpotlightCommands.inlineTrigger(filter) {
                 enterCommand(trigger.id, args: trigger.args)
             } else {
                 publish(SpotlightModeRows.commandMenu(filter))
@@ -1423,9 +1383,14 @@ struct SpotlightLauncherView: View {
         return true
     }
 
-    /// Enters a command (`:kill`, `:emptytrash`, `:help`). The text after the command name becomes its argument.
+    /// Enters a command. The text after the command name becomes its argument.
     private func enterCommand(_ id: String, args: String = "") {
         scopeReturnQuery = ""
+        lastCommand = id
+        if id == SpotlightCommands.changeDirectory {
+            openTab(nil, text: args.isEmpty ? ":cd" : ":cd \(args)")
+            return
+        }
         withAnimation(motion(SpotlightMotion.chip)) {
             scope = nil
             selectedPreviewActionID = nil
@@ -1433,9 +1398,11 @@ struct SpotlightLauncherView: View {
             activeCommand = id
             query = args
         }
-        lastCommand = id
         switch id {
-        case SpotlightCommands.kill: processModel.refreshSnapshot()
+        case SpotlightCommands.activeWindows:
+            OpenWindows.shared.refresh {
+                if isOpen, !dismissing, inWindowSearch { refresh() }
+            }
         case SpotlightCommands.emptyTrash: trashCount = TrashService.itemCount()
         default: break
         }
@@ -1444,18 +1411,12 @@ struct SpotlightLauncherView: View {
 
     /// ⌘/ — like the legacy launcher: reopen the most recent command, or exit the open one.
     private func toggleCommandMode() {
-        if activeCommand != nil { exitChip() } else { enterCommand(lastCommand) }
-    }
-
-    /// :kill — the first Enter only selects (so a slip doesn't kill the wrong thing), the second one kills.
-    private func confirmKill(_ item: SpotlightItem) {
-        guard let pid = item.pid else { return }
-        if armedKillPID == pid {
-            armedKillPID = nil
-            killProcess(item)
+        if activeCommand != nil {
+            exitChip()
+        } else if FolderAddressQuery.changeDirectoryArgument(in: query) != nil {
+            query = ""
         } else {
-            armedKillPID = pid
-            toast("⏎ again to force quit \(item.name)")
+            enterCommand(lastCommand)
         }
     }
 
@@ -1530,12 +1491,19 @@ struct SpotlightLauncherView: View {
 
     private func openFolderInTerminal(_ path: String) {
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard SpotlightBackend.isBrowsableFolder(at: url, excluding: themeStore.excludedFolderPaths),
-              FileManagerApp.openInTerminal(path) else {
-            toast("Couldn't open this folder in Terminal")
+        guard SpotlightBackend.isBrowsableFolder(at: url, excluding: themeStore.excludedFolderPaths) else {
+            toast("Couldn't open this folder in a terminal")
             return
         }
-        hide(restore: false, launched: true)
+        Task { @MainActor in
+            let opened = await TerminalApp.openFolder(url)
+            guard isOpen, !dismissing else { return }
+            if opened {
+                hide(restore: false, launched: true)
+            } else {
+                toast("Couldn't open this folder in a terminal")
+            }
+        }
     }
 
     private func emptyTrash() {
@@ -1557,6 +1525,7 @@ struct SpotlightLauncherView: View {
             toast("\(item.name) is already hidden")
         case .added:
             if scope?.id == item.id { exitChip() }
+            _ = themeStore.reloadFromConfig()
             // The reload re-walks the index (seconds): never on the main thread.
             Task { @MainActor in
                 let ok = await EngineBridge.shared.reloadConfigInBackground()
@@ -1679,11 +1648,20 @@ struct SpotlightLauncherView: View {
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
+    private func isVisibleAppResult(_ item: SpotlightItem) -> Bool {
+        let excluded = themeStore.excludedApplicationNames
+        guard !excluded.isEmpty, item.kind == .app || item.kind == .window else { return true }
+        if item.kind == .app, excluded.contains(AppExcludeWriter.normalize(item.name)) { return false }
+        guard let path = item.iconPath ?? item.target, path.hasPrefix("/") else { return true }
+        return !excluded.contains(AppExcludeWriter.normalize((path as NSString).lastPathComponent))
+    }
+
     /// Shows the results. Expands the panel if it isn't already.
     private func publish(_ candidates: [SpotlightItem]) {
         let exclusions = themeStore.excludedFolderPaths
-        let rows = exclusions.isEmpty ? candidates : candidates.filter { item in
-            guard item.kind == .folder, let target = item.target else { return true }
+        let rows = candidates.filter { item in
+            guard isVisibleAppResult(item) else { return false }
+            guard !exclusions.isEmpty, item.kind == .folder, let target = item.target else { return true }
             let resolved = URL(fileURLWithPath: target).resolvingSymlinksInPath().path
             return !FileSearchPaths.isExcluded(target, by: exclusions)
                 && !FileSearchPaths.isExcluded(resolved, by: exclusions)
@@ -1699,6 +1677,7 @@ struct SpotlightLauncherView: View {
         }
         withTransaction(swap) {
             all = rows
+            if let filter, !kinds.contains(filter) { self.filter = nil }
             shownQuery = query
             sel = keepSelOnPublish.map { min($0, max(0, rows.count - 1)) } ?? 0
         }
@@ -1856,11 +1835,7 @@ struct SpotlightLauncherView: View {
             return
         case .process:
             guard let pid = item.pid else { return }
-            if activeCommand == SpotlightCommands.kill {
-                confirmKill(item)
-            } else {
-                processModel.measureCPU(pid: pid)  // ps": Enter measures CPU, like the legacy launcher
-            }
+            processModel.measureCPU(pid: pid)
             return
         default:
             break
@@ -1887,13 +1862,13 @@ struct SpotlightLauncherView: View {
                 SpotlightOpener.perform(action, on: scope)
             }
         } else {
-            SpotlightOpener.open(item, inFinder: item.kind == .folder && opensInFinder(for: query))
+            SpotlightOpener.open(item, inFinder: item.kind == .folder && opensInFinder(for: actionQuery))
         }
         switch outcome {
         case .launched:
             // Learn the pick for this text (normal searches only): it comes first next time.
             if item.action == nil, tag == nil, browse == nil {
-                UsageLearning.shared.record(item, query: showsActionDetails ? scopeReturnQuery : query)
+                UsageLearning.shared.record(item, query: actionQuery)
             }
             // The just-opened app comes to the front by itself: don't return focus to the previous app.
             hide(restore: false, launched: true)
@@ -1902,17 +1877,27 @@ struct SpotlightLauncherView: View {
         }
     }
 
+    private var actionQuery: String { showsActionDetails ? scopeReturnQuery : query }
+
     private func opensInFinder(for text: String) -> Bool {
-        isFinderPage || (browse == nil && tag == nil && FolderAddressQuery.changeDirectoryArgument(in: text) != nil)
+        isFinderPage || (showsActionDetails && finderPageReturn != nil)
+            || (browse == nil && tag == nil && FolderAddressQuery.changeDirectoryArgument(in: text) != nil)
     }
 
-    /// Opens the selected application's details and usable actions as a separate page.
+    private func supportsActionPage(_ item: SpotlightItem) -> Bool {
+        item.kind == .app || item.kind == .folder
+    }
+
+    /// Opens the selected result's details and usable actions as a separate page.
     @discardableResult
     private func enterActionPage() -> Bool {
-        guard expanded, scope == nil, activeCommand == nil,
-              sel < results.count, results[sel].kind == .app else { return false }
+        guard expanded, scope == nil || showsFinderResults, activeCommand == nil,
+              sel < results.count, shownQuery == query else { return false }
         let item = results[sel]
-        guard let firstAction = previewActions(for: item).first else { return false }
+        guard supportsActionPage(item), let firstAction = previewActions(for: item).first else { return false }
+        if let finder = scope, let actionID = selectedPreviewActionID {
+            finderPageReturn = (finder, actionID, scopeReturnQuery)
+        }
         scopeReturnQuery = query
         withAnimation(motion(SpotlightMotion.chip)) {
             scope = item
@@ -1949,7 +1934,13 @@ struct SpotlightLauncherView: View {
     /// Remove the chip: exit actions (restoring the typed text) or exit the browsed group.
     private func exitChip() {
         withAnimation(motion(SpotlightMotion.chip)) {
-            if scope != nil {
+            if scope != nil, let previous = finderPageReturn {
+                scope = previous.item
+                selectedPreviewActionID = previous.actionID
+                query = scopeReturnQuery
+                scopeReturnQuery = previous.launcherQuery
+                finderPageReturn = nil
+            } else if scope != nil {
                 scope = nil
                 selectedPreviewActionID = nil
                 query = scopeReturnQuery
@@ -2022,6 +2013,10 @@ struct SpotlightLauncherView: View {
             if sel < results.count { run(results[sel]) }
             return true
         case KeyCode.tab:
+            if !flags.contains(.shift), showsFinderResults {
+                _ = enterActionPage()
+                return true
+            }
             if selectedPreviewActionID != nil {
                 exitChip()
                 return true
@@ -2039,9 +2034,6 @@ struct SpotlightLauncherView: View {
                 quickFocus = next == 0 ? nil : next - 1
                 return true
             }
-            // A primary Tab only enters a real scope when a result is selected.
-            if !flags.contains(.shift), expanded, sel < results.count { return true }
-            cycleFilter(flags.contains(.shift) ? -1 : 1)
             return true
         case Self.backspaceKeyCode where flags.isEmpty:
             return handleDelete()
@@ -2064,7 +2056,7 @@ struct SpotlightLauncherView: View {
             if activeCommand == Self.tagsCommand { exitChip() } else { openTagBrowser() }
             return true
         }
-        // ⌘K / ⌃K — view the actions of the selected row (Tab now cycles the filter pills).
+        // ⌘K / ⌃K — view the actions of the selected row.
         if flags == .command || flags == .control, key == "k" {
             enterScope()
             return true
@@ -2154,6 +2146,7 @@ struct SpotlightLauncherView: View {
             scope = nil
             selectedPreviewActionID = nil
             scopeReturnQuery = ""
+            finderPageReturn = nil
             browse = nil
             tag = nil
             showingSuggestions = false
@@ -2164,7 +2157,6 @@ struct SpotlightLauncherView: View {
             toastMsg = nil
             resizeDelay = 0
             activeCommand = nil
-            armedKillPID = nil
             armedConfirm = nil
             trashCount = nil
             panelHeight = Metric.barHeight
@@ -2219,9 +2211,9 @@ struct SpotlightLauncherView: View {
             BrowserTabs.shared.refresh {
                 if isOpen, !dismissing, tag != nil || !query.isEmpty { refresh() }
             }
-            // Open windows of other apps, for window rows and the `windows` tag.
+            // Open windows of other apps, for window rows and window searches.
             OpenWindows.shared.refresh {
-                if isOpen, !dismissing, tag?.windows == true { refresh() }
+                if isOpen, !dismissing, inWindowSearch { refresh() }
             }
             // The permission worked and macOS now says no: find out whether it went stale.
             AccessibilityDoctor.shared.noticeIfLost()
@@ -2537,7 +2529,7 @@ struct SpotlightResultList {
     }
     /// `all` narrowed to the selected pill group.
     private(set) var results: [SpotlightItem] = []
-    /// Pills for the groups present in the current search. Processes has its own tab.
+    /// Pills for the groups present in the current search.
     private(set) var kinds: [SpotlightKind] = []
 
     /// Goes up whenever `results` changes, so a cache built from it knows when to rebuild.

@@ -8,8 +8,7 @@ lumio-app/
 ├── Window/                                 floating panel, settings window, window setup
 ├── Views/
 │   ├── Spotlight/                          launcher UI: search field, results, previews
-│   ├── Settings/                           settings and update status
-│   └── Commands/                           `:kill` and other commands
+│   └── Settings/                           settings and update status
 ├── Models/                                 LauncherResult and theme models
 └── Support/
     ├── Launcher/                           engine bridge, hotkey, processes, trash, tools

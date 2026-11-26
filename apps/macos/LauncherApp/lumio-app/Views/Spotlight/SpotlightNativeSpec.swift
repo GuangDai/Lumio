@@ -107,8 +107,9 @@ enum SpotlightSpec {
     }
 
     /// Height of the part below the search bar: divider + filter pills + list + footer.
-    static func lowerHeight(rows: Int) -> CGFloat {
-        1 + Metric.lowerTopInset + Metric.pillsHeight + listHeight(rows: rows) + Metric.footerHeight
+    static func lowerHeight(rows: Int, includesPillHeight: Bool = true) -> CGFloat {
+        let pillHeight = includesPillHeight ? Metric.pillsHeight : 0
+        return 1 + Metric.lowerTopInset + pillHeight + listHeight(rows: rows) + Metric.footerHeight
     }
 
     /// Component timing. This is the only place "animation" remains in the launcher.

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Ranking for the `ps"` finder and `/kill`, ported field-for-field from the
+/// Ranking for the `ps"` finder, ported field-for-field from the
 /// Rust reference (`apps/linows/src-tauri/src/process.rs`) so macOS ranks like
 /// linows. The fuzzy name score is injected as a closure (backed by the
 /// `lumio_fuzzy_score` FFI over `core/matching`), keeping this module pure and
@@ -19,20 +19,6 @@ public enum ProcessScoring {
             self.name = name
             self.pid = pid
             self.ports = ports
-        }
-    }
-
-    /// A ranked `/kill` target: an app (nice name + icon) or a raw process.
-    /// Apps rank above processes so `kill firefox` surfaces the app.
-    public struct KillTarget: Equatable {
-        public let name: String
-        public let pid: Int32
-        public let isApp: Bool
-
-        public init(name: String, pid: Int32, isApp: Bool) {
-            self.name = name
-            self.pid = pid
-            self.isApp = isApp
         }
     }
 
@@ -57,10 +43,8 @@ public enum ProcessScoring {
         UInt16(query).map(Int.init)
     }
 
-    /// Shared scoring for both process finders. A numeric query matches a
-    /// listening port (exact beats partial) or the PID; every query also
-    /// fuzzy-matches the name. nil when nothing matches. Pass an empty `ports`
-    /// array for sources that carry no ports (e.g. app rows).
+    /// A numeric query matches a listening port (exact beats partial) or the
+    /// PID. Every query also fuzzy-matches the name.
     ///
     /// `fuzzy` scores an already-lowercased title against the (already
     /// lowercased) query the caller closed over.
@@ -122,46 +106,5 @@ public enum ProcessScoring {
             return (s, row.name.lowercased(), row)
         }
         return scored.sorted(by: hitOrder).map(\.value)
-    }
-
-    /// Rank `/kill` targets: apps first (matched on display name), then any
-    /// other process (matched on process name + numeric port/PID), deduped by
-    /// PID. Mirrors `rank_kill_targets`.
-    ///
-    /// `apps` are (display name, pid); `procs` are process candidates. `fuzzy`
-    /// scores an already-lowercased title against the caller's lowered query.
-    public static func rankKillTargets(
-        apps: [(name: String, pid: Int32)],
-        procs: [Candidate],
-        query: String,
-        fuzzy: (String) -> Int?
-    ) -> [KillTarget] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let numeric = isNumeric(trimmed)
-        let port = exactPort(trimmed)
-
-        // Apps carry no ports, so they match by name only; a numeric port/PID
-        // query resolves through the process rows below (which own the ports).
-        var appPIDs = Set<Int32>()
-        let appHits: [(score: Int, key: String, value: KillTarget)] = apps.compactMap { app in
-            let lowerName = app.name.lowercased()
-            guard let s = fuzzy(lowerName) else { return nil }
-            appPIDs.insert(app.pid)
-            return (s, lowerName, KillTarget(name: app.name, pid: app.pid, isApp: true))
-        }
-        let sortedApps = appHits.sorted(by: hitOrder)
-
-        // Processes already shown as an app (its representative PID) are skipped.
-        let procHits: [(score: Int, key: String, value: KillTarget)] = procs.compactMap { row in
-            guard !appPIDs.contains(row.pid) else { return nil }
-            guard let s = score(
-                name: row.name, ports: row.ports, pid: row.pid,
-                trimmedQuery: trimmed, isNumeric: numeric, exactPort: port, fuzzy: fuzzy
-            ) else { return nil }
-            return (s, row.name.lowercased(), KillTarget(name: row.name, pid: row.pid, isApp: false))
-        }
-        let sortedProcs = procHits.sorted(by: hitOrder)
-
-        return sortedApps.map(\.value) + sortedProcs.map(\.value)
     }
 }

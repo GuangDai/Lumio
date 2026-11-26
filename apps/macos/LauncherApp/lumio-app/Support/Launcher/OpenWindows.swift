@@ -103,9 +103,13 @@ nonisolated final class OpenWindows: @unchecked Sendable {
     /// Windows whose title or app name contains every word of `text`; title matches first.
     /// Empty text = every window. `skipping`: app paths to leave out (browsers, whose tabs
     /// are already listed one by one).
-    func search(_ text: String, limit: Int, skipping: (String) -> Bool = { _ in false }) -> [OpenWindow] {
+    func search(
+        _ text: String, limit: Int, includeMinimized: Bool = true, skipping: (String) -> Bool = { _ in false }
+    ) -> [OpenWindow] {
         let words = text.lowercased().split(separator: " ").map(String.init)
-        let pool = snapshot.filter { window in window.appPath.map { !skipping($0) } ?? true }
+        let pool = snapshot.filter { window in
+            (includeMinimized || !window.minimized) && (window.appPath.map { !skipping($0) } ?? true)
+        }
         guard !words.isEmpty else { return Array(pool.prefix(limit)) }
         let needle = words.joined(separator: " ")
         return pool

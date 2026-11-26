@@ -107,7 +107,7 @@ struct SpotlightItem: Identifiable, Equatable {
     var candidateID: String? = nil
     /// Action row (⌘K actions mode).
     var action: SpotlightAction? = nil
-    /// Process (ps" / :kill).
+    /// Process identifier.
     var pid: Int32? = nil
     /// Value supplied by the row, such as a command ID or tag keyword.
     var payload: String? = nil

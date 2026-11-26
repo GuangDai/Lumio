@@ -45,7 +45,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var keywords: String {
         switch self {
         case .general: "launch at login startup log level config file reset about version update check"
-        case .search: "file manager finder explorer open folders external drives ssd usb suggestions empty recent apps"
+        case .search: "file manager finder explorer open folders terminal ghostty external drives ssd usb suggestions empty recent apps applications hide hidden exclude filter"
         case .appearance: "corner radius theme look"
         case .indexing: "scan scope depth limit lazy folders skipped extra index everything"
         case .shortcuts: "hotkey keyboard key combination launcher"
@@ -253,6 +253,7 @@ struct ThemeSettingsView: View {
             // settings is shown; otherwise it would swallow Cmd+Shift+, and Esc
             // for the rest of the app.
             guard appUIState.showsThemeSettings else { return event }
+            guard NSApp.modalWindow == nil, event.window?.sheetParent == nil else { return event }
             // Recording a shortcut: every key (Esc included) belongs to the recorder.
             guard !ShortcutSettingsSection.isRecording else { return event }
 

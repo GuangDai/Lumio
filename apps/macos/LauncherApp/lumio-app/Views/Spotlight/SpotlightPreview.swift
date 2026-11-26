@@ -29,7 +29,7 @@ struct SpotlightPreviewView: View {
     var chips: [PreviewChip] = []
     var actions: [PreviewAction] = []
     var selectedActionID: String? = nil
-    /// ps" / :kill — process details (loaded on selection) and CPU (measured on Enter).
+    /// Process details load on selection and CPU is measured on Enter.
     var processDetail: ProcessDetail? = nil
     var processCPU: Double? = nil
     var measuringCPU = false

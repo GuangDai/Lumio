@@ -1,16 +1,17 @@
 import Foundation
-import CoreGraphics
 
 struct AppCommand: Identifiable {
     let id: String
-    let title: String
     let detail: String
     let placeholder: String
+    let shortcut: String
 
     var symbolName: String {
         switch id {
-        case AppConstants.Launcher.Command.kill:
-            return "xmark.circle"
+        case AppConstants.Launcher.Command.changeDirectory:
+            return "folder"
+        case AppConstants.Launcher.Command.activeWindows:
+            return "macwindow"
         case AppConstants.Launcher.Command.emptyTrash:
             return "trash.slash"
         case AppConstants.Launcher.Command.help:
@@ -52,7 +53,8 @@ enum AppConstants {
     enum Launcher {
 
         enum Command {
-            static let kill = "kill"
+            nonisolated static let changeDirectory = "cd"
+            static let activeWindows = "active"
             static let emptyTrash = "emptytrash"
             static let help = "help"
         }
@@ -133,27 +135,26 @@ enum AppConstants {
 
 
         /// Catalog order is the whole shortcut mapping: ⌘N selects the Nth entry
-        /// (see `onSelectCommandByIndex`), so the number in each title is
-        /// derived rather than written, and reordering this list is enough.
+        /// even when the command menu is filtered.
         private static let commandDefinitions: [(id: String, detail: String, placeholder: String)] = [
-            (Command.kill, "Force kill app or process by name, PID, or port", "Type a name, PID, or port"),
-            (Command.emptyTrash, "Empty the Trash (asks first)", "⏎ empty, Esc cancel"),
-            (Command.help, "Tabs, commands and shortcuts", "Filter"),
+            (Command.changeDirectory, "Open a folder in Finder", "Type a folder name or path"),
+            (Command.activeWindows, "List non-minimized windows by title or app", "Filter by title or app"),
+            (Command.emptyTrash, "Empty the Trash (asks first)", "⏎ empty the Trash"),
+            (Command.help, "Tabs, commands and shortcuts", "Filter help"),
         ]
 
         static let commandCatalog: [AppCommand] = commandDefinitions.enumerated().map { index, definition in
             AppCommand(
                 id: definition.id,
-                title: "\(definition.id) (⌘\(index + 1))",
                 detail: definition.detail,
-                placeholder: definition.placeholder
+                placeholder: definition.placeholder,
+                shortcut: "⌘\(index + 1)"
             )
         }
 
         /// Commands narrowed by `filter` - the text typed after a leading `:`.
-        /// Case-insensitive substring match against the command id and its
-        /// description, so `:end` or `:process` both surface `kill`. An empty
-        /// filter returns the whole catalog.
+        /// Case-insensitive substring match against the command ID and its
+        /// description. An empty filter returns the whole catalog.
         static func commandCatalog(matching filter: String) -> [AppCommand] {
             let needle = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !needle.isEmpty else { return commandCatalog }

@@ -48,12 +48,6 @@ pub const MODES: &[Mode] = &[
         prefix: ":speed ",
         about: "network speed test",
     },
-    Mode {
-        name: "kill",
-        aliases: &[],
-        prefix: ":kill ",
-        about: "running processes",
-    },
 ];
 
 /// The single resolution point: an unmatched name is where a future fallback
@@ -78,7 +72,7 @@ pub fn resolve(name: &str) -> Option<&'static Mode> {
 /// The URL is reachable from content the user did not write; argv is not, and
 /// is not filtered by this.
 ///
-/// Trimmed first, or one leading space walks `:kill` straight through.
+/// Leading whitespace does not make a command safe.
 pub fn url_term_is_safe(term: &str) -> bool {
     let trimmed = term.trim_start();
     !(trimmed.starts_with(':') || term.contains('"'))
@@ -143,8 +137,7 @@ where
         .map(|arg| arg.as_ref().to_string())
         .collect();
 
-    // Before any flag parsing, so the rest is the term verbatim:
-    // `lumio kill chrome` has to keep its term.
+    // Before any flag parsing, so the rest is the term verbatim.
     if let Some(first) = args.first()
         && let Some(mode) = resolve(first)
     {
@@ -239,7 +232,7 @@ mod tests {
     #[test]
     fn a_term_is_appended_to_the_prefix() {
         assert_eq!(resolve("app").unwrap().query("editor"), "a\"editor");
-        assert_eq!(resolve("kill").unwrap().query("chrome"), ":kill chrome");
+        assert_eq!(resolve("dirs").unwrap().query("D/T"), "d\"D/T");
         assert_eq!(resolve("app").unwrap().query(""), "a\"");
     }
 
@@ -278,14 +271,14 @@ mod tests {
 
     #[test]
     fn a_url_term_may_not_reach_a_command_panel() {
-        assert!(!url_term_is_safe(":kill 123"));
+        assert!(!url_term_is_safe(":active Finder"));
         // The quote would re-target the search onto a different prefix.
         assert!(!url_term_is_safe("x\"y"));
     }
 
     #[test]
     fn leading_space_does_not_smuggle_a_command_past_the_check() {
-        assert!(!url_term_is_safe("   :kill 123"));
+        assert!(!url_term_is_safe("   :active Finder"));
     }
 
     #[test]
@@ -332,7 +325,7 @@ mod tests {
 
     #[test]
     fn explicit_unknown_and_removed_modes_are_errors() {
-        for mode in ["unknown", "files", "file", "web", "search"] {
+        for mode in ["unknown", "files", "file", "web", "search", "kill"] {
             assert_eq!(
                 parse(&["--mode", mode]),
                 Launch::UnknownMode(mode.to_string())
@@ -351,23 +344,21 @@ mod tests {
     #[test]
     fn query_passes_grammar_through_untouched() {
         assert_eq!(parse(&["--query", "a\"invoice"]), shown("a\"invoice"));
-        assert_eq!(parse(&["--query", ":kill chrome"]), shown(":kill chrome"));
+        assert_eq!(parse(&["--query", ":cd D/T"]), shown(":cd D/T"));
     }
 
-    /// `lumio kill chrome` used to lose trailing args, which is exactly the
-    /// kind of term the free-text modes exist for.
     #[test]
     fn a_term_keeps_its_hyphenated_arguments() {
-        assert_eq!(parse(&["kill", "chrome"]), shown(":kill chrome"));
+        assert_eq!(parse(&["folders", "-personal"]), shown("d\"-personal"));
         assert_eq!(
-            parse(&["--mode", "kill", "--", "chrome"]),
-            shown(":kill chrome")
+            parse(&["--mode", "folders", "--", "-personal"]),
+            shown("d\"-personal")
         );
     }
 
     #[test]
     fn an_explicit_mode_wins_over_a_positional() {
-        assert_eq!(parse(&["--mode", "kill", "chrome"]), shown(":kill chrome"));
+        assert_eq!(parse(&["--mode", "folders", "D/T"]), shown("d\"D/T"));
     }
 
     /// An alias that goes unlisted is a way in nobody can find.

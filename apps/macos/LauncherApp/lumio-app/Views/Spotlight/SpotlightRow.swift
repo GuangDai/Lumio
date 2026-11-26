@@ -11,8 +11,6 @@ struct SpotlightRow: View, Equatable {
 
     let item: SpotlightItem
     let selected: Bool
-    /// :kill — this process is armed, the next Enter kills it.
-    let armed: Bool
     /// App rows: the app is running (green dot; ⏎ switches to it).
     var running = false
     /// Typed words shown in bold in the title (Fluent Search-style); empty = plain title.
@@ -23,7 +21,7 @@ struct SpotlightRow: View, Equatable {
 
     static func == (lhs: SpotlightRow, rhs: SpotlightRow) -> Bool {
         lhs.item.sameRowContent(as: rhs.item)
-            && lhs.selected == rhs.selected && lhs.armed == rhs.armed
+            && lhs.selected == rhs.selected
             && lhs.running == rhs.running && lhs.highlight == rhs.highlight
             && lhs.palette.isDark == rhs.palette.isDark
             && lhs.reduceMotion == rhs.reduceMotion
@@ -68,7 +66,7 @@ struct SpotlightRow: View, Equatable {
             // Change IMMEDIATELY on selection: cross-fading them in step with the slide would make the
             // text of both states overlap.
             Group {
-                if selected || armed {
+                if selected {
                     keyCap("⏎")
                 }
             }

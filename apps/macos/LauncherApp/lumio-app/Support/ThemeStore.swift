@@ -19,6 +19,7 @@ final class ThemeStore: ObservableObject {
         }
     }
 
+    @Published private(set) var excludedApplicationNames: Set<String> = []
     @Published private(set) var excludedFolderPaths: [String] = []
     @Published private(set) var folderScanRoots: [String] = []
     @Published private(set) var extraFolderScanRoots: [String] = []
@@ -217,7 +218,12 @@ final class ThemeStore: ObservableObject {
         folderScanRoots = defaultFolderScanRoots()
         extraFolderScanRoots = []
 
-        for (key, value) in Self.configValues(raw) {
+        let values = Self.configValues(raw)
+        let excludedApps = ConfigFileLines.parseList(values["app_exclude_names"] ?? "")
+            .map(AppExcludeWriter.normalize)
+        excludedApplicationNames = Set(excludedApps.filter { !$0.isEmpty })
+
+        for (key, value) in values {
             switch key {
             case "folder_scan_depth":
                 if let parsed = parsePositiveInt(value) { settings.folderScanDepth = parsed }
