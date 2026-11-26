@@ -502,7 +502,7 @@ struct SpotlightPreviewView: View {
 
     /// "/Users/me/Documents/Photoshop Projects/a.psd" → "Documents › Photoshop Projects › a.psd"
     /// (the last four parts, from the home folder down).
-    private static func breadcrumb(_ path: String) -> String {
+    nonisolated private static func breadcrumb(_ path: String) -> String {
         let home = NSHomeDirectory()
         let shown = path.hasPrefix(home + "/") ? String(path.dropFirst(home.count + 1)) : path
         var parts = shown.split(separator: "/").map(String.init)

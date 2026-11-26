@@ -163,11 +163,6 @@ pub(crate) fn clear_index_dirty_if_unchanged(snapshot_version: u64) {
     }
 }
 
-pub(crate) fn clear_index_dirty() {
-    let current = INDEX_CHANGE_VERSION.load(Ordering::Acquire);
-    INDEX_CLEARED_VERSION.store(current, Ordering::Release);
-}
-
 #[cfg(test)]
 pub(crate) fn stop_index_watchers_for_test() {
     stop_index_watchers();
@@ -594,14 +589,20 @@ fn should_mark_dirty_from_event(event: &Event) -> bool {
 mod tests {
     use super::should_mark_dirty_from_event;
     use super::{
-        INDEX_CHANGE_VERSION, INDEX_REFRESH_IN_PROGRESS, IndexRefreshGuard, clear_index_dirty,
+        INDEX_CHANGE_VERSION, INDEX_CLEARED_VERSION, INDEX_REFRESH_IN_PROGRESS, IndexRefreshGuard,
         clear_index_dirty_if_unchanged, is_index_dirty, legacy_default_db_path, mark_index_dirty,
         refresh_allowed_by_dirty_mode, try_acquire_index_refresh_slot,
     };
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
     use notify::{Event, EventKind};
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use std::sync::{Mutex, OnceLock};
+
+    fn clear_index_dirty() {
+        let current = INDEX_CHANGE_VERSION.load(Ordering::Acquire);
+        INDEX_CLEARED_VERSION.store(current, Ordering::Release);
+    }
 
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

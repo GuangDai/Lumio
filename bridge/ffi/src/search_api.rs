@@ -14,11 +14,6 @@ struct FfiSearchPayload<'a> {
     query: &'a str,
     count: usize,
     results: Vec<lumio_engine::LaunchResult>,
-    /// File recall only: which fallback produced the results when the strict
-    /// query matched nothing ("window" | "terms" | "window_terms"), so the
-    /// shell can label them instead of silently showing something broader.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    relaxed: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<FfiErrorPayload>,
 }
@@ -75,7 +70,7 @@ pub(crate) fn lumio_search_json_impl(query: *const c_char, limit: u32) -> *mut c
 
     let results = with_engine(|engine| engine.search(&query, max as usize));
     let result_count = results.len();
-    let cstring = serialize_full_payload(&query, results, None);
+    let cstring = serialize_full_payload(&query, results);
     if is_debug_enabled() {
         log_debug(&format!(
             "search query_len={} limit={} count={} elapsed_ms={}",
@@ -86,25 +81,6 @@ pub(crate) fn lumio_search_json_impl(query: *const c_char, limit: u32) -> *mut c
         ));
     }
     store_json_allocation(cstring)
-}
-
-/// A parse with terms and nothing else was triggered by a bare "file" or
-/// "download" word. Kept for the unit tests below.
-fn is_weak_empty_recall(filter: &lumio_engine::FileFilter, results: &[LaunchResult]) -> bool {
-    results.is_empty()
-        && !filter.terms.trim().is_empty()
-        && filter.categories.is_empty()
-        && filter.locations.is_empty()
-        && filter.start.is_none()
-        && filter.end.is_none()
-}
-
-fn relaxed_code(relaxation: Option<lumio_engine::FileSearchRelaxation>) -> Option<&'static str> {
-    relaxation.map(|r| match r {
-        lumio_engine::FileSearchRelaxation::WidenedWindow => "window",
-        lumio_engine::FileSearchRelaxation::DroppedTerms => "terms",
-        lumio_engine::FileSearchRelaxation::DroppedTermsWidenedWindow => "window_terms",
-    })
 }
 
 pub(crate) fn lumio_search_json_compact_impl(query: *const c_char, limit: u32) -> *mut c_char {
@@ -174,17 +150,12 @@ fn normalized_limit(limit: u32) -> u32 {
     }
 }
 
-fn serialize_full_payload(
-    query: &str,
-    results: Vec<lumio_engine::LaunchResult>,
-    relaxed: Option<&'static str>,
-) -> CString {
+fn serialize_full_payload(query: &str, results: Vec<lumio_engine::LaunchResult>) -> CString {
     let result_count = results.len();
     let payload = FfiSearchPayload {
         query,
         count: result_count,
         results,
-        relaxed,
         error: None,
     };
 
@@ -219,52 +190,4 @@ fn search_error_json_compact(err: SearchError) -> String {
         }
     })
     .to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_weak_empty_recall;
-    use lumio_engine::{FileFilter, LaunchResult};
-    use lumio_indexing::{Candidate, CandidateKind};
-
-    fn result() -> LaunchResult {
-        LaunchResult::from((
-            &Candidate::new("file:a", CandidateKind::File, "a.pdf", "/tmp/a.pdf"),
-            1,
-        ))
-    }
-
-    #[test]
-    fn terms_only_recall_with_no_match_falls_back_to_normal_search() {
-        let filter = FileFilter {
-            terms: "bitcoin price".into(),
-            ..Default::default()
-        };
-        assert!(is_weak_empty_recall(&filter, &[]));
-        assert!(!is_weak_empty_recall(&filter, &[result()]));
-    }
-
-    #[test]
-    fn typed_or_dated_recall_keeps_its_empty_panel() {
-        let typed = FileFilter {
-            terms: "invoice".into(),
-            categories: vec!["pdf".into()],
-            ..Default::default()
-        };
-        let dated = FileFilter {
-            terms: "invoice".into(),
-            start: Some(0),
-            end: Some(1),
-            ..Default::default()
-        };
-        assert!(!is_weak_empty_recall(&typed, &[]));
-        assert!(!is_weak_empty_recall(&dated, &[]));
-    }
-
-    #[test]
-    fn a_bare_files_request_is_not_weak() {
-        // "show me my files": every word is glue, so an empty index is the only
-        // way it comes back empty. That still asked for files.
-        assert!(!is_weak_empty_recall(&FileFilter::default(), &[]));
-    }
 }

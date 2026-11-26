@@ -15,7 +15,6 @@ lumio-tools = { path = "../tools" }
 ignore = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1.1"
 unicode-normalization = "0.1"
 globset = "0.4.18"
 

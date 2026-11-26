@@ -228,7 +228,8 @@ nonisolated enum ProcessService {
             while cursor < end && collected < argc {
                 let startIdx = cursor
                 while cursor < end && base[cursor] != 0 { cursor += 1 }
-                let arg = String(cString: Array(raw[startIdx..<cursor]) + [0])
+                let bytes = raw[startIdx..<cursor].map { UInt8(bitPattern: $0) }
+                let arg = String(decoding: bytes, as: UTF8.self)
                 if !arg.isEmpty { args.append(arg) }
                 collected += 1
                 cursor += 1 // step over the NUL separator

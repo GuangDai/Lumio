@@ -11,18 +11,21 @@ final class DelayedAction {
     private var task: Task<Void, Never>?
 
     /// Replaces any pending action. `condition` is evaluated after the delay; `false` drops
-    /// the action. Nothing is retained once the task finishes or is cancelled.
+    /// the action. The returned task completes when the action runs or is dropped.
+    @discardableResult
     func schedule(
         after delay: Duration,
         if condition: @escaping @MainActor () -> Bool = { true },
         _ action: @escaping @MainActor () async -> Void
-    ) {
+    ) -> Task<Void, Never> {
         task?.cancel()
-        task = Task { @MainActor in
+        let pending = Task { @MainActor in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, condition() else { return }
             await action()
         }
+        task = pending
+        return pending
     }
 
     func cancel() {

@@ -16,9 +16,9 @@ final class SpotlightQuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPan
 
     /// Only touched on the main thread (Quick Look calls its data source there).
     nonisolated(unsafe) private var url: URL?
-    /// What the panel zooms out of and back into (the side preview), and the picture it
-    /// zooms with. Main thread only, like `url`.
-    nonisolated(unsafe) fileprivate weak var sourceView: NSView?
+    /// The side preview that the panel zooms out of and back into.
+    @MainActor fileprivate weak var sourceView: NSView?
+    /// The picture used during the zoom. Main thread only, like `url`.
     nonisolated(unsafe) private var transitionImage: NSImage?
 
     /// Opens Quick Look on `item`, or swaps what it shows if it is already open.
@@ -85,8 +85,11 @@ final class SpotlightQuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPan
     // MARK: - QLPreviewPanelDelegate (zoom animation)
 
     nonisolated func previewPanel(_ panel: QLPreviewPanel!, sourceFrameOnScreenFor item: (any QLPreviewItem)!) -> NSRect {
-        guard let view = sourceView, let window = view.window, window.isVisible else { return .zero }
-        return window.convertToScreen(view.convert(view.bounds, to: nil))
+        guard Thread.isMainThread else { return .zero }
+        return MainActor.assumeIsolated {
+            guard let view = sourceView, let window = view.window, window.isVisible else { return .zero }
+            return window.convertToScreen(view.convert(view.bounds, to: nil))
+        }
     }
 
     nonisolated func previewPanel(
