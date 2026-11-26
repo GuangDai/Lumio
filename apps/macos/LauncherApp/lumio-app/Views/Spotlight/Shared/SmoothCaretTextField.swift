@@ -75,15 +75,6 @@ struct SmoothCaretTextField: NSViewRepresentable {
     func updateNSView(_ field: CaretTextField, context: Context) {
         context.coordinator.parent = self
 
-        // Pin the field to the app's own light / dark, not the glass's: Liquid Glass adapts
-        // the appearance of what it hosts to the backdrop's brightness, so dynamic colors
-        // (text, placeholder) flipped shade as the desktop behind or the glass shape changed.
-        // Read from the app, not the SwiftUI environment: inside the glass that may be the
-        // adapted scheme too.
-        let appDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let appearance = NSAppearance(named: appDark ? .darkAqua : .aqua)
-        if field.appearance?.name != appearance?.name { field.appearance = appearance }
-
         if context.coordinator.appliedMultiline != allowsMultiline {
             context.coordinator.appliedMultiline = allowsMultiline
             applyLineMode(to: field)
@@ -138,9 +129,7 @@ struct SmoothCaretTextField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    /// Opaque, unlike `secondaryLabelColor` (a translucent label color): over the glass, a
-    /// translucent placeholder lets whatever is behind the window bleed through, so it looked
-    /// brighter or dimmer depending on the desktop and as the glass morphed.
+    /// Fixed placeholder colors for light and dark appearance.
     private static let placeholderColor = NSColor(name: nil) { appearance in
         let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         return dark ? NSColor(white: 0.62, alpha: 1) : NSColor(white: 0.45, alpha: 1)
@@ -247,8 +236,6 @@ final class CaretTextField: NSTextField {
         configureCaretLayer()
     }
 
-    /// No vibrant blending: over the glass it mixes the text with whatever is behind the
-    /// window, so the same text looked brighter or dimmer from one moment to the next.
     override var allowsVibrancy: Bool { false }
 
     required init?(coder: NSCoder) {

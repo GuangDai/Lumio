@@ -2,9 +2,7 @@
 //  IndexStats.swift
 //  lumio-app
 //
-//  What Lumio's own index holds right now, for Settings ▸ Indexing: how many apps, files and
-//  folders, and when it was last brought up to date. Read straight from the index database,
-//  read-only. Also whether the macOS Spotlight index (which the whole-Mac search uses) is on.
+//  Application and folder index counts for Settings ▸ Indexing.
 //
 
 import Foundation
@@ -12,13 +10,9 @@ import SQLite3
 
 nonisolated struct IndexStats: Equatable, Sendable {
     var apps = 0
-    var files = 0
     var folders = 0
     var updated: Date?
-    /// nil = could not tell.
     var spotlightOn: Bool?
-
-    var total: Int { apps + files + folders }
 
     /// The core's default database (see bridge/ffi `default_db_path`).
     private static var databasePath: String {
@@ -28,35 +22,31 @@ nonisolated struct IndexStats: Equatable, Sendable {
 
     /// Reads the counts. Call off the main thread.
     static func read() -> IndexStats {
-        var stats = IndexStats()
+        var stats = IndexStats(spotlightOn: spotlightEnabled())
         var handle: OpaquePointer?
-        if sqlite3_open_v2(databasePath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle {
-            sqlite3_busy_timeout(handle, 400)
-            var statement: OpaquePointer?
-            let sql = "SELECT kind, COUNT(*), MAX(indexed_at_unix_s) FROM candidates GROUP BY kind"
-            if sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK {
-                var newest: Int64 = 0
-                while sqlite3_step(statement) == SQLITE_ROW {
-                    let kind = sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? ""
-                    let count = Int(sqlite3_column_int64(statement, 1))
-                    newest = max(newest, sqlite3_column_int64(statement, 2))
-                    switch kind {
-                    case "app": stats.apps = count
-                    case "file": stats.files = count
-                    case "folder": stats.folders = count
-                    default: break
-                    }
-                }
-                if newest > 0 { stats.updated = Date(timeIntervalSince1970: TimeInterval(newest)) }
-            }
-            sqlite3_finalize(statement)
-        }
-        sqlite3_close(handle)
-        stats.spotlightOn = spotlightEnabled()
+        let status = sqlite3_open_v2(databasePath, &handle, SQLITE_OPEN_READONLY, nil)
+        defer { sqlite3_close(handle) }
+        guard status == SQLITE_OK, let handle else { return stats }
+
+        sqlite3_busy_timeout(handle, 400)
+        var statement: OpaquePointer?
+        let sql = """
+            SELECT COUNT(CASE WHEN kind = 'app' THEN 1 END),
+                   COUNT(CASE WHEN kind = 'folder' THEN 1 END), MAX(indexed_at_unix_s)
+            FROM candidates WHERE kind IN ('app', 'folder')
+            """
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return stats }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return stats }
+
+        stats.apps = Int(sqlite3_column_int64(statement, 0))
+        stats.folders = Int(sqlite3_column_int64(statement, 1))
+        let latest = sqlite3_column_int64(statement, 2)
+        if latest > 0 { stats.updated = Date(timeIntervalSince1970: TimeInterval(latest)) }
         return stats
     }
 
-    /// `mdutil -s` on the data volume: "Indexing enabled." / "Indexing disabled."
+    /// Checks whether macOS can provide additional folder matches on the data volume.
     private static func spotlightEnabled() -> Bool? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdutil")

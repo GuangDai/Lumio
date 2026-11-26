@@ -2,9 +2,8 @@
 //  PinStore.swift
 //  lumio-app
 //
-//  Pinned results, like Fluent Search's pins: anything you pin (an app, a file, a folder, a
-//  link) stays on the Home screen as a large icon, in the order you pinned it, until you
-//  unpin it. Pin from a result's actions or with ⌘⇧P.
+//  Pinned apps, folders, links and settings stay on the Home screen in the order you pinned them.
+//  Pin from a result's actions or with ⌘⇧P.
 //
 //  Stored locally in ~/Library/Application Support/lumio/pins.json.
 //
@@ -18,6 +17,7 @@ final class PinStore: ObservableObject {
     /// One pinned result: enough to draw and open it again without searching.
     private struct Entry: Codable {
         var kind: String
+        var sourceID: String?
         var name: String
         var meta: String?
         var target: String
@@ -41,7 +41,13 @@ final class PinStore: ObservableObject {
         if let data = try? Data(contentsOf: Self.file),
            let saved = try? JSONDecoder().decode([Entry].self, from: data)
         {
-            entries = saved
+            entries = saved.filter { entry in
+                SpotlightItem.acceptsSavedTarget(
+                    kind: entry.kind, sourceID: entry.sourceID ?? entry.candidateID,
+                    name: entry.name, target: entry.target,
+                    iconPath: entry.iconPath, symbol: entry.symbol, meta: entry.meta
+                )
+            }
         }
         publish()
     }
@@ -49,11 +55,12 @@ final class PinStore: ObservableObject {
     /// What can be pinned: results with a stable thing to open.
     static func target(of item: SpotlightItem) -> (kind: SpotlightKind, target: String)? {
         switch item.kind {
-        case .app, .folder, .doc, .url, .setting:
-            guard let target = item.target, !target.isEmpty else { return nil }
+        case .app, .folder, .url, .setting:
+            guard let target = item.target, !target.isEmpty,
+                  item.canSave(as: item.kind, target: target) else { return nil }
             return (item.kind, target)
         case .tab:
-            guard let url = item.tab?.url ?? item.target else { return nil }
+            guard let url = item.tab?.url ?? item.target, item.canSave(as: .url, target: url) else { return nil }
             return (.url, url)
         default:
             return nil
@@ -75,7 +82,7 @@ final class PinStore: ObservableObject {
             return false
         }
         entries.append(Entry(
-            kind: kind.rawValue, name: item.name, meta: item.meta, target: target,
+            kind: kind.rawValue, sourceID: item.id, name: item.name, meta: item.meta, target: target,
             iconPath: item.iconPath, colors: item.colors, symbol: item.symbol, favicon: item.favicon,
             candidateID: item.candidateID
         ))

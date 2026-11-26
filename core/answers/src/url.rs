@@ -5,9 +5,8 @@
 //! network-free - both platform shells (macOS FFI, linows Tauri) call this so the
 //! rules and the risky TLD/extension list live once.
 //!
-//! Two tiers, by how certain the match is (see `UrlTier`). The tier exists so the
-//! UI can rank a certain match on top while keeping a fuzzy bare-host match from
-//! ever stealing the default selection away from a real local file/app/folder.
+//! Two confidence tiers let the UI rank a certain match above local results
+//! while keeping a fuzzy bare-host match lower in the list.
 
 use serde::Serialize;
 
@@ -46,8 +45,7 @@ pub fn classify_url(query: &str) -> Option<UrlMatch> {
     if q.is_empty() {
         return None;
     }
-    // Interior whitespace means a search phrase, not an address. A launcher
-    // prefix marker (`a"`, `f"`, `tw"`, ...) always carries a `"`; reject both.
+    // Launcher prefixes contain a quote, and URL input cannot contain raw whitespace.
     if q.chars().any(char::is_whitespace) || q.contains('"') {
         return None;
     }
@@ -182,7 +180,7 @@ mod tests {
         assert_eq!(url("look up react docs"), None);
         assert_eq!(url("ratio 3:2"), None);
         // Launcher prefix markers.
-        assert_eq!(url("f\"foo"), None);
+        assert_eq!(url("a\"foo"), None);
         // Partial / malformed hosts.
         assert_eq!(url("github."), None);
         assert_eq!(url(".com"), None);

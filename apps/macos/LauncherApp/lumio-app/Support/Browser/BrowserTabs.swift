@@ -6,7 +6,7 @@
 //  one. Reads tabs over AppleScript from browsers that are ALREADY running (it never launches
 //  one). macOS asks once per browser for Automation permission ("Lumio wants to control …").
 //
-//  Supported: Safari, Google Chrome, Arc, Brave, Microsoft Edge, Vivaldi, Chromium, Opera.
+//  Supported: Google Chrome, Arc, Brave, Microsoft Edge, Vivaldi, Chromium, Opera.
 //  Firefox has no AppleScript tab access.
 //
 //  The tab list is a snapshot taken in the background when the launcher opens (and when a
@@ -40,11 +40,10 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
     static let shared = BrowserTabs()
 
     enum Browser: String, Sendable, CaseIterable {
-        case safari, chrome, arc, brave, edge, vivaldi, chromium, opera
+        case chrome, arc, brave, edge, vivaldi, chromium, opera
 
         var bundleID: String {
             switch self {
-            case .safari: "com.apple.Safari"
             case .chrome: "com.google.Chrome"
             case .arc: "company.thebrowser.Browser"
             case .brave: "com.brave.Browser"
@@ -57,7 +56,6 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
 
         var displayName: String {
             switch self {
-            case .safari: "Safari"
             case .chrome: "Chrome"
             case .arc: "Arc"
             case .brave: "Brave"
@@ -68,8 +66,6 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
             }
         }
 
-        /// Safari names tabs `name`; every Chromium browser calls it `title`.
-        fileprivate var titleProperty: String { self == .safari ? "name" : "title" }
     }
 
     /// Whether the app at `path` is one of the browsers Lumio reads.
@@ -140,19 +136,10 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
 
     /// Brings the tab to the front: selects it in its window, raises the window, activates the browser.
     @discardableResult
-    func activate(_ tab: BrowserTab) -> Bool {
+    func activate(_ tab: BrowserTab) async -> Bool {
         let source: String
         let app = "application id \"\(tab.browser.bundleID)\""
         switch tab.browser {
-        case .safari:
-            source = """
-            tell \(app)
-                set w to window id \(tab.windowID)
-                set current tab of w to tab \(tab.tabIndex) of w
-                set index of w to 1
-                activate
-            end tell
-            """
         case .arc:
             source = """
             tell \(app)
@@ -173,7 +160,7 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
         if Self.run(source) != nil { return true }
         // The window or tab is gone (closed since the snapshot): open the address instead.
         guard let url = URL(string: tab.url) else { return false }
-        return NSWorkspace.shared.open(url)
+        return await BrowserOpening.open(url, preferredAppPath: tab.appPath)
     }
 
     // MARK: - AppleScript
@@ -193,7 +180,6 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
 
     /// One Apple Event per window (titles and URLs fetched as lists), then joined locally.
     private static func readTabs(of browser: Browser, appPath: String?) -> [BrowserTab] {
-        let titleProp = browser.titleProperty
         let source = """
         set fs to character id 31
         set rs to character id 30
@@ -202,7 +188,7 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
             repeat with w in (every window)
                 try
                     set wid to id of w
-                    set ts to \(titleProp) of every tab of w
+                    set ts to title of every tab of w
                     set us to URL of every tab of w
                     repeat with i from 1 to count of us
                         set u to item i of us
@@ -221,10 +207,7 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
             let fields = row.components(separatedBy: fieldSep)
             guard fields.count == 4, let index = Int(fields[1]) else { return nil }
             let url = fields[3]
-            // Skip blank / internal pages: nothing useful to switch to.
-            guard !url.isEmpty, !url.hasPrefix("chrome://newtab"), !url.hasPrefix("arc://"),
-                  url != "about:blank", url != "favorites://"
-            else { return nil }
+            guard BrowserOpening.webAddress(url) != nil else { return nil }
             let title = fields[2].isEmpty ? url : fields[2]
             return BrowserTab(browser: browser, windowID: fields[0], tabIndex: index,
                               title: title, url: url, appPath: appPath)
@@ -252,5 +235,54 @@ nonisolated final class BrowserTabs: @unchecked Sendable {
     private static func fold(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+nonisolated enum BrowserOpening {
+    static func webAddress(_ raw: String) -> URL? {
+        guard let url = URL(string: raw), isWebAddress(url) else { return nil }
+        return url
+    }
+
+    private static func isWebAddress(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = url.host, !host.isEmpty else { return false }
+        return true
+    }
+
+    static func isBlockedBundleID(_ bundleID: String?) -> Bool {
+        bundleID?.lowercased().hasPrefix("com.apple.safari") == true
+    }
+
+    static func isBlockedApplication(_ app: URL) -> Bool {
+        [app, app.resolvingSymlinksInPath()].contains { candidate in
+            candidate.pathComponents.contains { component in
+                let name = component.lowercased()
+                return name == "safari.app" || name == "safari technology preview.app"
+            } || isBlockedBundleID(Bundle(url: candidate)?.bundleIdentifier)
+        }
+    }
+
+    /// Sends HTTP(S) links to an explicitly selected browser to keep Safari blocked
+    /// even when it is configured as the macOS default.
+    @MainActor
+    static func open(_ url: URL, preferredAppPath: String? = nil) -> Bool {
+        guard isWebAddress(url) else { return false }
+        let workspace = NSWorkspace.shared
+        let handlers = workspace.urlsForApplications(toOpen: url)
+        let preferredHandler = preferredAppPath.flatMap { path in
+            let preferred = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+            return handlers.first { $0.standardizedFileURL.resolvingSymlinksInPath() == preferred }
+        }
+        let candidates = [workspace.urlForApplication(toOpen: url), preferredHandler].compactMap { $0 } + handlers
+        guard let application = candidates.first(where: { !isBlockedApplication($0) }) else { return false }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        workspace.open([url], withApplicationAt: application, configuration: configuration) { _, error in
+            if let error {
+                tabsLog.error("Link open failed: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+        return true
     }
 }

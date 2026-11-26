@@ -3,7 +3,6 @@ import Foundation
 enum LauncherPinnedLookupScope: Equatable {
     case unscoped
     case apps
-    case files
     case folders
     case disabled
 }
@@ -14,9 +13,6 @@ enum LauncherSearchLogic {
 
         if normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.apps) {
             return .apps
-        }
-        if normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.files) {
-            return .files
         }
         if normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.folders) {
             return .folders
@@ -32,9 +28,6 @@ enum LauncherSearchLogic {
 
         if scope == .apps, normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.apps) {
             normalized = String(normalized.dropFirst(AppConstants.Launcher.QueryPrefix.apps.count))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if scope == .files, normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.files) {
-            normalized = String(normalized.dropFirst(AppConstants.Launcher.QueryPrefix.files.count))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } else if scope == .folders, normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.folders) {
             normalized = String(normalized.dropFirst(AppConstants.Launcher.QueryPrefix.folders.count))
@@ -60,5 +53,4 @@ enum LauncherSearchLogic {
             || (finderName.hasPrefix(normalized)
                 && normalized.count >= AppConstants.Launcher.Finder.minPrefixMatchLength)
     }
-
 }

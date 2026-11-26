@@ -100,7 +100,6 @@ pub(crate) fn kind_bias(candidate: &Candidate) -> i64 {
     match candidate.kind {
         CandidateKind::App => BIAS_APP,
         CandidateKind::Folder => BIAS_FOLDER,
-        CandidateKind::File => BIAS_FILE,
         CandidateKind::Action => BIAS_ACTION,
     }
 }
@@ -120,9 +119,7 @@ pub(crate) fn query_kind_penalty_with_settings_flag(
                     BIAS_APP_ON_SETTINGS_QUERY
                 }
             }
-            CandidateKind::Folder | CandidateKind::File | CandidateKind::Action => {
-                BIAS_NON_APP_ON_SETTINGS_QUERY
-            }
+            CandidateKind::Folder | CandidateKind::Action => BIAS_NON_APP_ON_SETTINGS_QUERY,
         }
     } else if is_system_settings_candidate(candidate) {
         SETTINGS_ON_NON_SETTINGS_QUERY_PENALTY
@@ -160,26 +157,22 @@ pub(crate) fn is_system_settings_candidate(candidate: &Candidate) -> bool {
 }
 
 pub(crate) fn path_depth_penalty(candidate: &Candidate) -> i64 {
-    match candidate.kind {
-        // Neither has a filesystem path to be deep in.
-        CandidateKind::App | CandidateKind::Action => 0,
-        CandidateKind::File | CandidateKind::Folder => {
-            let depth = candidate
-                .path
-                .split('/')
-                .filter(|part| !part.is_empty())
-                .count() as i64;
-            -(depth / 2)
-        }
+    if candidate.kind != CandidateKind::Folder {
+        return 0;
     }
+    let depth = candidate
+        .path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .count() as i64;
+    -(depth / 2)
 }
 
 pub(crate) fn default_browse_score(candidate: &Candidate, now_unix_s: i64) -> i64 {
     let kind_boost = match candidate.kind {
         CandidateKind::App => 600,
-        CandidateKind::Action => BROWSE_BOOST_ACTION,
         CandidateKind::Folder => 120,
-        CandidateKind::File => 0,
+        CandidateKind::Action => BROWSE_BOOST_ACTION,
     };
 
     let frequency = ((candidate.use_count as f64 + 1.0).log2() * BROWSE_USAGE_LOG_SCALE) as i64;
@@ -289,24 +282,6 @@ mod tests {
         )
     }
 
-    fn file(title: &str, path: &str) -> Candidate {
-        Candidate::new(
-            &format!("file.{}", title.to_lowercase()),
-            CandidateKind::File,
-            title,
-            path,
-        )
-    }
-
-    fn folder(title: &str, path: &str) -> Candidate {
-        Candidate::new(
-            &format!("folder.{}", title.to_lowercase()),
-            CandidateKind::Folder,
-            title,
-            path,
-        )
-    }
-
     #[test]
     fn contains_match_title_scores_higher_than_subtitle() {
         let title_score = contains_match_score("safari", "safari browser", None).unwrap();
@@ -401,26 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn kind_bias_apps_higher_than_files() {
-        let a = app("Safari", "/Applications/Safari.app");
-        let f = file("notes.txt", "/Users/test/notes.txt");
-        assert!(kind_bias(&a) > kind_bias(&f));
-    }
-
-    #[test]
-    fn path_depth_penalty_apps_exempt() {
-        let a = app("Safari", "/Applications/Deeply/Nested/Safari.app");
-        assert_eq!(path_depth_penalty(&a), 0);
-    }
-
-    #[test]
-    fn path_depth_penalty_increases_with_depth() {
-        let shallow = file("a.txt", "/Users/a.txt");
-        let deep = file("b.txt", "/Users/test/Documents/nested/deep/b.txt");
-        assert!(path_depth_penalty(&shallow) > path_depth_penalty(&deep));
-    }
-
-    #[test]
     fn default_browse_score_prefers_frequent_apps() {
         let mut frequent = app("Safari", "/Applications/Safari.app");
         frequent.use_count = 50;
@@ -461,14 +416,14 @@ mod tests {
             ..Default::default()
         };
         let regular_app = app("Safari", "/Applications/Safari.app");
-        let folder = folder("network", "/Users/test/network");
+        let action = Candidate::new("src:task:network", CandidateKind::Action, "network", "");
 
         let settings_score = query_kind_penalty_with_settings_flag(true, &settings_app);
         let app_score = query_kind_penalty_with_settings_flag(true, &regular_app);
-        let folder_score = query_kind_penalty_with_settings_flag(true, &folder);
+        let action_score = query_kind_penalty_with_settings_flag(true, &action);
 
         assert!(settings_score > app_score);
-        assert!(app_score > folder_score);
+        assert!(app_score > action_score);
     }
 
     #[test]
@@ -496,7 +451,7 @@ mod tests {
             ..Default::default()
         };
         let regular_app = app("Safari", "/Applications/Safari.app");
-        let regular_file = file("notes.txt", "/Users/test/notes.txt");
+        let regular_action = Candidate::new("src:task:notes", CandidateKind::Action, "notes", "");
 
         let settings_like = "network";
         let non_settings_like = "ingo";
@@ -525,9 +480,9 @@ mod tests {
         assert_eq!(
             query_kind_penalty_with_settings_flag(
                 looks_like_settings_query(non_settings_like),
-                &regular_file,
+                &regular_action,
             ),
-            query_kind_penalty_with_settings_flag(false, &regular_file)
+            query_kind_penalty_with_settings_flag(false, &regular_action)
         );
     }
 

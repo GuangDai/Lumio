@@ -27,9 +27,6 @@ pub enum LaunchResultAction {
     Reveal {
         path: String,
     },
-    WebSearch {
-        query: String,
-    },
     /// A user-declared block, identified by its candidate id. There is nothing
     /// to open: the shell looks the block up and performs its steps.
     PerformBlock {
@@ -41,9 +38,6 @@ impl From<(&Candidate, i64)> for LaunchResult {
     fn from((candidate, score): (&Candidate, i64)) -> Self {
         let action = match candidate.kind {
             CandidateKind::App => LaunchResultAction::Open {
-                path: candidate.path.to_string(),
-            },
-            CandidateKind::File => LaunchResultAction::Open {
                 path: candidate.path.to_string(),
             },
             CandidateKind::Folder => LaunchResultAction::OpenFolder {

@@ -82,9 +82,6 @@ struct SpotlightRow: View, Equatable {
 
     /// The title, with the typed words in bold where they appear (like Fluent Search).
     private var titleText: Text {
-        if item.kind == .web, item.target == nil, !item.id.hasPrefix("suggest|") {
-            return Text("Search the web — \(item.name)")
-        }
         guard !highlight.isEmpty else { return Text(item.name) }
         var title = AttributedString(item.name)
         for word in highlight {
@@ -121,7 +118,7 @@ struct SpotlightRow: View, Equatable {
 /// `matchedGeometryEffect`, so it SLIDES when the selection change happens inside
 /// `withAnimation` (arrow keys, hover) and jumps straight when it doesn't (new results).
 /// The newly selected row also zooms up one beat and back — same approach as the legacy launcher's
-/// SelectionPill, just a different color (follows the glass, not the theme).
+/// SelectionPill, with the same palette as the launcher surface.
 struct SpotlightSelection: ViewModifier {
     let isSelected: Bool
     let fill: Color

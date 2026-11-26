@@ -7,8 +7,7 @@ permissions:
   contents: write
 jobs:
   release:
-    # Liquid Glass is gated on the link SDK, not the run-time OS: CI must
-    # build with the Xcode 26+ SDK like local builds do.
+    # Use the same macOS image and Xcode version as the CI build.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4

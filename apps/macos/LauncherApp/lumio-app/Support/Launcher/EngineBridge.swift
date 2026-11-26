@@ -1,28 +1,5 @@
 import Foundation
 
-/// The row a tool action acts on.
-nonisolated struct ToolActionRow {
-    let candidateID: String
-    let title: String
-    let path: String
-    var ancestorsJSON: String = "[]"
-
-    func withCStrings<T>(
-        _ body: (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?,
-            UnsafePointer<CChar>?) -> T
-    ) -> T {
-        candidateID.withCString { candidate in
-            title.withCString { title in
-                path.withCString { path in
-                    ancestorsJSON.withCString { ancestors in
-                        body(candidate, title, path, ancestors)
-                    }
-                }
-            }
-        }
-    }
-}
-
 @_silgen_name("lumio_search_json_compact")
 nonisolated
 private func lumio_search_json_compact(_ query: UnsafePointer<CChar>?, _ limit: UInt32) -> UnsafeMutablePointer<CChar>?
@@ -51,18 +28,6 @@ private func lumio_fuzzy_score(_ query: UnsafePointer<CChar>?, _ title: UnsafePo
 @_silgen_name("lumio_classify_url_json")
 nonisolated
 private func lumio_classify_url_json(_ query: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("lumio_record_url_hit")
-nonisolated
-private func lumio_record_url_hit(_ url: UnsafePointer<CChar>?) -> Bool
-
-@_silgen_name("lumio_recent_urls_json")
-nonisolated
-private func lumio_recent_urls_json(_ query: UnsafePointer<CChar>?, _ limit: UInt32) -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("lumio_perform_tool_action_json")
-nonisolated
-private func lumio_perform_tool_action_json(_ action: UnsafePointer<CChar>?, _ candidateID: UnsafePointer<CChar>?, _ rowTitle: UnsafePointer<CChar>?, _ path: UnsafePointer<CChar>?, _ isDir: Bool, _ ancestorsJSON: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
 
 final class EngineBridge: @unchecked Sendable {
     nonisolated static let shared = EngineBridge()
@@ -129,7 +94,7 @@ final class EngineBridge: @unchecked Sendable {
         return payload.error
     }
 
-    /// Re-reads `~/.lumio/config` AND re-walks every indexed folder (seconds on a big disk).
+    /// Re-reads `~/.lumio/config` and refreshes the search index.
     /// Blocks the caller for the whole walk: use `reloadConfigInBackground()` from the UI.
     nonisolated func reloadConfig() -> Bool {
         lumio_reload_config()
@@ -172,46 +137,6 @@ final class EngineBridge: @unchecked Sendable {
         return try? JSONDecoder().decode(URLMatch.self, from: data)
     }
 
-    /// Records that `url` was opened through the launcher, for later re-open
-    /// suggestions. Fire-and-forget; opens the shared lumio.db (own connection).
-    @discardableResult
-    nonisolated func recordURLHit(url: String) -> Bool {
-        url.withCString { lumio_record_url_hit($0) }
-    }
-
-    /// Runs `action` on a row. Shell actions are spawned detached inside core;
-    /// an `application` result is handed back for `NSWorkspace` to launch.
-    /// Spawns a process, so call it off the main thread.
-    nonisolated func performToolAction(
-        _ action: String, row: ToolActionRow, isDirectory: Bool
-    ) -> ToolAction? {
-        let ptr = row.withCStrings { candidate, title, path, ancestors in
-            action.withCString { action in
-                lumio_perform_tool_action_json(action, candidate, title, path, isDirectory, ancestors)
-            }
-        }
-        return Self.decodeToolAction(ptr)
-    }
-
-    private nonisolated static func decodeToolAction(_ ptr: UnsafeMutablePointer<CChar>?) -> ToolAction? {
-        guard let ptr else { return nil }
-        defer { lumio_free_cstring(ptr) }
-        guard let data = String(cString: ptr).data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(ToolAction.self, from: data)
-    }
-
-    /// Up to `limit` previously-opened URLs matching `query`, most-recent first.
-    /// Opens the shared lumio.db - call off the main thread.
-    nonisolated func recentURLs(query: String, limit: Int) -> [URLHistoryEntry] {
-        let ptr = query.withCString { lumio_recent_urls_json($0, UInt32(limit)) }
-        guard let ptr else { return [] }
-        defer { lumio_free_cstring(ptr) }
-        guard let data = String(cString: ptr).data(using: .utf8) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return (try? decoder.decode([URLHistoryEntry].self, from: data)) ?? []
-    }
-
     nonisolated private func fallbackResults() -> [LauncherResult] {
         []
     }
@@ -230,58 +155,10 @@ nonisolated struct URLMatch: Decodable {
     let tier: Tier
 }
 
-/// A user-declared block and the steps performing it will run, so the panel can
-/// show exactly what Enter is about to do.
-/// One preferred-tool action resolved against a row. `kind` says which of the
-/// other fields are filled.
-nonisolated struct ToolAction: Decodable {
-    enum Kind: String, Decodable {
-        /// Composed shell text. Only `lumio_tool_action_json` returns this;
-        /// performing runs it in core and reports `performed` or `failed`.
-        case shell
-        /// The native side launches `tool` with `path`.
-        case application
-        /// Nothing declared, so the platform's own handler does it.
-        case systemDefault = "system_default"
-        /// Core spawned it.
-        case performed
-        case failed
-        /// No tool declared, or one that cannot do this.
-        case unavailable
-    }
-
-    let kind: Kind
-    let tool: String?
-    let command: String?
-    let path: String?
-    /// Shown as-is when `kind` is `unavailable` or `failed`.
-    let reason: String?
-    /// The config key that would fix an `unavailable` action.
-    let key: String?
-    /// A block declared this action for its own rows, so `tool` names the
-    /// block: "Open in Projects" is not a label worth showing.
-    let fromBlock: Bool
-}
-
-/// Wire shape of a `url_history` row (see url-history spec), decoded with
-/// `.convertFromSnakeCase`. `title` is reserved and nil today.
-nonisolated struct URLHistoryEntry: Decodable {
-    let url: String
-    let title: String?
-    let hitCount: Int
-    let lastUsedAtUnixS: Int
-    /// Frecency rank from the Rust core (same `rank_score` as apps/files), used
-    /// to place recent URLs among local results rather than a fixed threshold.
-    let score: Int
-}
-
 private nonisolated struct SearchPayload: Decodable {
     let query: String
     let count: Int
     let results: [SearchItem]
-    /// File recall only: which fallback produced the results (see
-    /// EngineBridge.FileRecallOutcome).
-    let relaxed: String?
     let error: BridgeError?
 }
 

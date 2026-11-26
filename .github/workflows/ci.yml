@@ -58,6 +58,9 @@ jobs:
       - name: Install nightly Rust for the Xcode build phase
         run: rustup toolchain install nightly --profile minimal
 
+      - name: Test macOS application discovery
+        run: cargo +nightly test --locked --manifest-path core/Cargo.toml -p lumio-engine platform::macos::apps::tests
+
       - name: Build and verify Lumio.dmg
         run: |
           ./scripts/build.sh
@@ -81,9 +84,9 @@ jobs:
           [[ "$version_output" == "lumio $version" || "$version_output" == "lumio $version ("*')' ]]
           modes=$("$lumio" --list-modes)
           printf '%s\n' "$modes"
-          awk '$1 == "apps" { apps = 1 } $1 == "files" { files = 1 } END { exit !(apps && files) }' <<< "$modes"
+          awk '$1 == "apps" { apps = 1 } $1 == "folders" { folders = 1 } $1 == "processes" { processes = 1 } END { exit !(apps && folders && processes) }' <<< "$modes"
 
-          for mode in clipboard clip cb clipboard-image clipimg ci dictionary dict calculator calc ocr translate translation; do
+          for mode in file files clipboard clip cb clipboard-image clipimg ci dictionary dict calculator calc ocr translate translation; do
             status=0
             output=$("$lumio" --mode "$mode" 2>&1) || status=$?
             if [[ "$status" != 2 || "$output" != "lumio: unknown mode \"$mode\""* ]]; then

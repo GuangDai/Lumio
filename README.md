@@ -2,7 +2,7 @@
     <img src="apps/macos/LauncherApp/lumio-app/Assets.xcassets/AppIcon.appiconset/icon_256x256@2x.png" width=160 height=160>
     <h1>Lumio</h1>
     <p><strong>A fast, free and open-source keyboard launcher for macOS.</strong></p>
-    <p>Press <code>Option+Space</code> to find apps, files, browser tabs and more. Lumio combines a Rust search index and macOS Spotlight in a native SwiftUI launcher, with Fluent Search–inspired tags and actions.</p>
+    <p>Press <code>Option+Space</code> to find apps, folders, settings, windows and browser tabs. Lumio combines a Rust search index with a native SwiftUI launcher and Fluent Search–inspired tags and actions.</p>
     <p>A fork of <a href="https://github.com/kunkka19xx/look"><strong>kunkka19xx/look</strong></a>. Huge thanks to <a href="https://github.com/kunkka19xx">kunkka19xx</a> for the original work this project builds on.</p>
 </div>
 
@@ -20,19 +20,19 @@
 
 ## How Lumio compares
 
-Lumio is a free, open-source keyboard launcher for apps, files, browser tabs and system commands.
+Lumio is a free, open-source keyboard launcher for apps, folders, browser tabs and system commands.
 
 | | Lumio | Spotlight | [Alfred](https://www.alfredapp.com) | [Raycast](https://www.raycast.com) |
 | --- | --- | --- | --- | --- |
 | Price | Free | Free, built into macOS | Free core; paid Powerpack for additional features | Free core; paid Pro plan for cloud sync and AI |
 | Open source | Yes (GPL-3.0) | No | No | No |
 | Platform | macOS 15+, Apple Silicon | macOS | macOS | macOS |
-| App and file search | Yes | Yes | Yes | Yes |
+| App search | Yes | Yes | Yes | Yes |
 | Extensions and workflows | No, built-in modes only | Limited (Shortcuts) | Yes, large workflow community | Yes, extension store (TypeScript) |
 | Window management | No | No | Via workflows | Yes, built in |
 | AI chat | No | — | Via workflows | Yes (Pro) |
 
-**Choose Lumio if** you want a free, open-source launcher that indexes your files locally and works without an account or a subscription.
+**Choose Lumio if** you want a free, open-source launcher that works without an account or a subscription.
 
 **Choose Raycast or Alfred if** you need an extension ecosystem, window management, AI chat or a large library of ready-made workflows. Both are more mature and more extensible than Lumio.
 
@@ -69,49 +69,49 @@ Quit Lumio and move `/Applications/Lumio.app` to the Trash. To remove its settin
 | Show / hide Lumio | `Option+Space` |
 | Settings | `Cmd+Shift+Space` |
 | Open / run | `Enter` |
-| Search the web | `Cmd+Enter` |
 | Show in Finder | `Cmd+F` |
-| Open in your editor / terminal | `Cmd+E` / `Cmd+T` |
-| Actions for the selected item | `Cmd+K` |
+| Open the selected result's action page | `Tab` or `Cmd+K` |
 | Move to Trash | `Cmd+D` |
 | Hide the selected app from results | `Cmd+Shift+H` |
-| Use a launcher quick button | `Cmd+1` … `Cmd+4` (depends on button order) |
-| Search tag (`yt`, `g`, `drive`, `gh`…) | type keyword, then `Tab` |
+| Use a launcher quick button | `Cmd+1` … `Cmd+3` (depends on button order) |
+| Search tag (`apps`, `folders`, `windows`…) | type keyword, then `Tab` |
 | Browse search tags | `Option+T` |
 | Cycle result filters | `Tab` / `Shift+Tab` |
 | Pin / unpin a result | `Cmd+Shift+P` |
-| Quick Look preview | `Shift+Enter` / `Cmd+Y` |
-| Cycle sort order | `Option+S` |
 | Command mode | `Cmd+/` |
 | Help | `Cmd+H` |
 | Close | `Esc` |
 
 ### Fluent Search–inspired search
 
-Lumio combines its own fuzzy index with macOS Spotlight: the latter adds matches from your home folder, iCloud Drive and indexed external drives. Search results can include browser bookmarks, history, open tabs and windows. Results learn from what you open; the detail pane offers previews, file actions and clickable tags. Drag files or links out to other apps.
+Lumio fuzzy-searches apps, folders and settings. Results can also include bookmarks, Chromium history, open browser tabs and windows. Results learn from what you open, and the detail pane shows actions for the selected result.
 
 Type a tag and press `Tab` to narrow a search. Tags can be stacked, and `Option+T` opens the tag browser:
 
 ```text
-yt Tab lofi beats          Search YouTube
-pdf Tab contract           Find PDFs by name
-downloads Tab pdf Tab      Find PDFs in Downloads
-~/Projects Tab             Search a specific folder
-content Tab invoice        Search document text via Spotlight
+apps Tab mail              Find apps matching mail
+folders Tab D/T            Find folder paths such as Downloads/Telegram
+bookmark Tab lumio         Find saved bookmarks matching lumio
 windows Tab                List open windows
 ```
 
-`content` searches Spotlight's text index. Open browser tabs switch to the existing tab with `Enter`. You can pin results to Home with `Cmd+Shift+P` and optionally enable recent apps and files in Settings → General → **Suggestions when empty**. Choose Finder or another file manager in Settings → General.
+Press `Enter` on an open browser tab to switch to it. Pin results to Home with `Cmd+Shift+P`, or enable recently used apps in Settings → General → **Suggestions when empty**.
 
-See [Search tags, browser tabs and suggestions](assets/docs/search-tags.md) for supported browsers, custom tags, shortcuts and configuration.
+### Open a folder in Finder
+
+Search for Finder, select its application result, and press `Tab` to open its details and actions. Type a folder name, abbreviated path such as `D/T`, or full local address to switch the page to folder results. A file address resolves to its parent directory. Press `Enter` to open the selected folder in Finder, or choose **Open in Terminal**.
+
+From the main search field, use `cd ~/Library` or `cd D/T` to go straight to folder results. The default folder index includes `~/Library` and hidden folders such as `~/.config`.
+
+See [Search tags and browser tabs](assets/docs/search-tags.md) for supported browsers, tags, shortcuts and configuration.
 
 **Commands.** Type `:` or press `Cmd+/` for `:kill <name, PID or port>`, `:emptytrash` and `:help`. Type `> npm run dev` to run a terminal command.
 
 ## Configuration
 
-Settings live in `~/.lumio/config`, created on first launch. Use Settings (`Cmd+Shift+Space`) to configure indexing, skipped folders, search, shortcuts and your file manager. After choosing a skipped folder, click **Save Config**; it and its contents are excluded from Lumio file search. You can also edit the config file and press `Cmd+Shift+;` to reload.
+Settings live in `~/.lumio/config`, created on first launch. Use Settings (`Cmd+Shift+Space`) to configure folder indexing, shortcuts and appearance. You can also edit the config file and press `Cmd+Shift+;` to reload.
 
-Other options include scan depth and limits, ignore patterns, search aliases, Processes tab visibility, custom search tags, web suggestions and the editor and terminal used by `Cmd+E` / `Cmd+T`.
+Options include search aliases, Processes tab visibility and the order of the launcher quick buttons.
 
 ## Permissions
 
@@ -119,11 +119,10 @@ Most features work without special permissions. macOS may request access when yo
 
 - **Accessibility**: list or switch to open windows.
 - **Automation**: access open tabs in each supported browser, or empty the Trash via Finder.
-- **Full Disk Access**: read Safari bookmarks and history. Other features continue to work without it.
 
 ## Privacy and network access
 
-File indexing runs locally. Browser bookmarks and history are read from local browser data. Web suggestions are enabled by default and send the typed query to Google's suggestion service; set `web_suggestions=tags` to limit them to web tags, or `web_suggestions=off` to disable them. Search-tag icons may be fetched from Google's icon service. Web searches also use the network.
+App, folder and settings indexing, browser data lookup and query matching run locally. Opening a URL passes it to a supported non-Safari browser.
 
 ## Documentation
 
@@ -131,7 +130,7 @@ File indexing runs locally. Browser bookmarks and history are read from local br
 - [Rust core](assets/docs/core.md)
 - [FFI bridge](assets/docs/ffi-bridge.md)
 - [macOS app](assets/docs/macos-app.md)
-- [Search tags, browser tabs and suggestions](assets/docs/search-tags.md)
+- [Search tags and browser tabs](assets/docs/search-tags.md)
 - [Build and release](assets/docs/build-and-release.md)
 
 ## Contributing

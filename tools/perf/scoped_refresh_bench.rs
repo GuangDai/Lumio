@@ -1,7 +1,5 @@
-//! Times `bootstrap_sqlite_scoped` in each mode (ALL / APPS_ONLY / FILES_ONLY)
-//! against the current machine's real file/app layout. This is the actual win
-//! the watcher delivers: a watcher-triggered refresh that touches one source
-//! should be measurably faster than rescanning everything.
+//! Times full, apps-only and folders-only bootstraps. Watcher events refresh
+//! the source whose paths have changed.
 //!
 //! Run with:
 //!   cargo run --release --bin scoped_refresh_bench --manifest-path tools/perf/Cargo.toml
@@ -31,24 +29,26 @@ fn main() {
     println!("# cold pass (first call writes WAL, inserts every row)");
     bench("ALL  ", BootstrapScope::ALL, &db_path);
     bench("APPS ", BootstrapScope::APPS_ONLY, &db_path);
-    bench("FILES", BootstrapScope::FILES_ONLY, &db_path);
+    bench("FOLDERS", BootstrapScope::FOLDERS_ONLY, &db_path);
 
     println!("\n# warm pass (representative of watcher-triggered refreshes)");
     for _ in 0..2 {
         bench("ALL  ", BootstrapScope::ALL, &db_path);
         bench("APPS ", BootstrapScope::APPS_ONLY, &db_path);
-        bench("FILES", BootstrapScope::FILES_ONLY, &db_path);
+        bench("FOLDERS", BootstrapScope::FOLDERS_ONLY, &db_path);
     }
 
     if let Ok(store) = SqliteStore::open(&db_path)
         && let Ok(cands) = store.load_candidates(None)
     {
         let apps = cands.iter().filter(|c| c.id.starts_with("app:")).count();
-        let files = cands.iter().filter(|c| c.id.starts_with("file:")).count();
         let folders = cands.iter().filter(|c| c.id.starts_with("folder:")).count();
-        let settings = cands.iter().filter(|c| c.id.starts_with("setting:")).count();
+        let settings = cands
+            .iter()
+            .filter(|c| c.id.starts_with("setting:"))
+            .count();
         println!(
-            "\nfinal row count: total={}  apps={apps}  files={files}  folders={folders}  settings={settings}",
+            "\nfinal row count: total={}  apps={apps}  folders={folders}  settings={settings}",
             cands.len()
         );
     }
@@ -57,7 +57,7 @@ fn main() {
     let _ = std::fs::remove_file(&db_path);
 }
 
-fn bench(label: &str, scope: BootstrapScope, db_path: &PathBuf) {
+fn bench(label: &str, scope: BootstrapScope, db_path: &std::path::Path) {
     let started = Instant::now();
     match QueryEngine::bootstrap_sqlite_scoped(db_path, scope) {
         Ok(()) => {

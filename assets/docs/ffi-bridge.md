@@ -15,9 +15,7 @@
 | `search_api.rs` | `lumio_search_json`, `lumio_search_json_compact` |
 | `usage_api.rs` | recording and reading usage events |
 | `modes_api.rs` | launch modes |
-| `tools_api.rs` | preferred tools (editor, terminal) |
 | `answers_api.rs` | URL helpers |
-| `url_history_api.rs` | web search history |
 | `matching_api.rs` | text matching helpers |
 | `runtime_config.rs` | loading and reloading `~/.lumio/config` |
 | `state.rs` | the process-wide `QueryEngine` and filesystem watchers (`notify`) that keep the index fresh |

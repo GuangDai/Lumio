@@ -1,5 +1,4 @@
-//! The cached `SqliteStore` connection for URL history and usage endpoints.
-//! This avoids rerunning database migrations on every search keystroke.
+//! The cached `SqliteStore` connection for recording launcher usage.
 
 use crate::state::default_db_path;
 use lumio_storage::SqliteStore;
@@ -40,6 +39,7 @@ fn open_at(path: &Path) -> Option<SqliteStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumio_indexing::{Candidate, CandidateKind};
 
     fn temp_db(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -59,22 +59,31 @@ mod tests {
         let second = temp_db("b");
 
         {
-            let guard = lock_for(cell, first.clone());
-            let (path, store) = guard.as_ref().expect("opened");
-            assert_eq!(path, &first);
-            store.record_url_hit("https://example.com/").expect("hit");
+            let mut guard = lock_for(cell, first.clone());
+            let (path, store) = guard.as_mut().expect("opened");
+            assert_eq!(path.as_path(), first.as_path());
+            store
+                .upsert_candidates(&[Candidate::new(
+                    "app:test",
+                    CandidateKind::App,
+                    "Test",
+                    "/Applications/Test.app",
+                )])
+                .expect("add app");
         }
         {
             // Same path: the data written above is visible and nothing reopened.
             let guard = lock_for(cell, first.clone());
             let (_, store) = guard.as_ref().expect("still open");
-            assert_eq!(store.recent_urls("example", 5).expect("urls").len(), 1);
+            let candidates = store.load_candidates(None).expect("load apps");
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].id.as_ref(), "app:test");
         }
         {
             let guard = lock_for(cell, second.clone());
             let (path, store) = guard.as_ref().expect("reopened");
             assert_eq!(path, &second);
-            assert!(store.recent_urls("example", 5).expect("urls").is_empty());
+            assert!(store.load_candidates(None).expect("load apps").is_empty());
         }
         let _ = std::fs::remove_dir_all(first.parent().unwrap());
         let _ = std::fs::remove_dir_all(second.parent().unwrap());

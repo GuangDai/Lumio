@@ -1,9 +1,6 @@
 use crate::normalize::normalize_for_search;
 use crate::platform;
-#[cfg(test)]
-use crate::platform::paths::compile_ignore_matcher;
 use crate::platform::paths::expand_with_home;
-use globset::GlobBuilder;
 use lumio_tools::Tools;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -14,13 +11,13 @@ pub const APP_SCAN_DEPTH: usize = 3;
 pub const APP_EXCLUDE_PATHS: [&str; 0] = [];
 pub const APP_EXCLUDE_NAMES: [&str; 0] = [];
 
-pub const FILE_SCAN_DEPTH: usize = 4;
-pub const FILE_SCAN_DEPTH_MIN: usize = 1;
-pub const FILE_SCAN_DEPTH_MAX: usize = 12;
-pub const FILE_SCAN_LIMIT: usize = 8000;
-pub const FILE_SCAN_LIMIT_MIN: usize = 500;
-pub const FILE_SCAN_LIMIT_MAX: usize = 50_000;
-pub const FILE_EXCLUDE_PATHS: [&str; 0] = [];
+pub const FOLDER_SCAN_DEPTH: usize = 4;
+pub const FOLDER_SCAN_DEPTH_MIN: usize = 1;
+pub const FOLDER_SCAN_DEPTH_MAX: usize = 12;
+pub const FOLDER_SCAN_LIMIT: usize = 8000;
+pub const FOLDER_SCAN_LIMIT_MIN: usize = 500;
+pub const FOLDER_SCAN_LIMIT_MAX: usize = 50_000;
+pub const FOLDER_EXCLUDE_PATHS: [&str; 0] = [];
 pub const LAZY_INDEXING_ENABLED: bool = true;
 
 pub const SCORE_TITLE_CONTAINS: i64 = 1200;
@@ -29,7 +26,6 @@ pub const SCORE_TOKEN_ALL_MATCH: i64 = 850;
 
 pub const BIAS_APP: i64 = 220;
 pub const BIAS_FOLDER: i64 = 0;
-pub const BIAS_FILE: i64 = -20;
 /// Bias for action rows.
 pub const BIAS_ACTION: i64 = 200;
 /// Browse boost for action rows on empty query.
@@ -48,12 +44,11 @@ pub const QUERY_SETTINGS_HINTS: [&str; 6] = [
     "sound",
 ];
 
-pub const SKIP_DIR_NAMES: [&str; 18] = [
+pub const SKIP_DIR_NAMES: [&str; 17] = [
     "node_modules",
     "target",
     "build",
     "dist",
-    "library",
     "applications",
     "old firefox data",
     "deriveddata",
@@ -73,19 +68,33 @@ pub const SKIP_DIR_NAMES: [&str; 18] = [
     "my music",
 ];
 
+const LEGACY_FOLDER_KEYS: &[(&str, &str)] = &[
+    ("folder_scan_roots", "file_scan_roots"),
+    ("folder_scan_extra_roots", "file_scan_extra_roots"),
+    ("folder_scan_depth", "file_scan_depth"),
+    ("folder_scan_limit", "file_scan_limit"),
+    ("folder_exclude_paths", "file_exclude_paths"),
+];
+
+// The previous generated config skipped Library. Ignore that preset when
+// upgrading, while keeping a custom skip_dir_names override.
+const LEGACY_DEFAULT_SKIPS: &str = concat!(
+    "node_modules,target,build,dist,library,applications,old firefox data,",
+    "deriveddata,pods,vendor,out,coverage,tmp,cache,venv",
+);
+
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub app_scan_roots: Vec<String>,
     pub app_scan_depth: usize,
     pub app_exclude_paths: Vec<String>,
     pub app_exclude_names: Vec<String>,
-    pub file_scan_roots: Vec<String>,
-    pub file_scan_extra_roots: Vec<String>,
-    pub file_scan_depth: usize,
-    pub file_scan_limit: usize,
-    pub file_exclude_paths: Vec<String>,
+    pub folder_scan_roots: Vec<String>,
+    pub folder_scan_extra_roots: Vec<String>,
+    pub folder_scan_depth: usize,
+    pub folder_scan_limit: usize,
+    pub folder_exclude_paths: Vec<String>,
     pub skip_dir_names: Vec<String>,
-    pub ignored_file_patterns: Vec<String>,
     pub lazy_indexing_enabled: bool,
     pub localized_app_names: bool,
     pub search_aliases: HashMap<String, Vec<String>>,
@@ -105,11 +114,11 @@ impl Default for RuntimeConfig {
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),
-            file_scan_roots: default_file_scan_roots(),
-            file_scan_extra_roots: Vec::new(),
-            file_scan_depth: FILE_SCAN_DEPTH,
-            file_scan_limit: FILE_SCAN_LIMIT,
-            file_exclude_paths: FILE_EXCLUDE_PATHS
+            folder_scan_roots: default_folder_scan_roots(),
+            folder_scan_extra_roots: Vec::new(),
+            folder_scan_depth: FOLDER_SCAN_DEPTH,
+            folder_scan_limit: FOLDER_SCAN_LIMIT,
+            folder_exclude_paths: FOLDER_EXCLUDE_PATHS
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),
@@ -117,7 +126,6 @@ impl Default for RuntimeConfig {
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),
-            ignored_file_patterns: Vec::new(),
             lazy_indexing_enabled: LAZY_INDEXING_ENABLED,
             localized_app_names: false,
             search_aliases: default_search_aliases(),
@@ -145,23 +153,23 @@ impl RuntimeConfig {
         if let Some(path) = config_path() {
             ensure_default_config_file(&path);
             config.apply_from_file(&path);
-            config.ensure_default_file_scan_roots_present();
+            config.ensure_default_folder_scan_roots_present();
         }
         config
     }
 
     /// Union the current platform defaults into the user's saved
-    /// `file_scan_roots`, preserving any custom entries they added.
+    /// `folder_scan_roots`, preserving any custom entries they added.
     /// Idempotent: re-running with no missing defaults is a no-op.
     ///
     /// Trade-off: removing a default by deleting it from the config file
     /// won't stick - the next load adds it back. That's intentional; the
     /// schema treats defaults as a guaranteed minimum, with
-    /// `file_exclude_paths` as the supported opt-out for specific dirs.
-    fn ensure_default_file_scan_roots_present(&mut self) {
-        for default_root in default_file_scan_roots() {
-            if !self.file_scan_roots.contains(&default_root) {
-                self.file_scan_roots.push(default_root);
+    /// `folder_exclude_paths` as the supported opt-out for specific dirs.
+    fn ensure_default_folder_scan_roots_present(&mut self) {
+        for default_root in default_folder_scan_roots() {
+            if !self.folder_scan_roots.contains(&default_root) {
+                self.folder_scan_roots.push(default_root);
             }
         }
     }
@@ -219,6 +227,10 @@ impl RuntimeConfig {
         };
 
         let home = user_home_dir();
+        let active_keys: HashSet<&str> = contents
+            .lines()
+            .filter_map(|line| assigned_key(strip_comments(line)))
+            .collect();
         for raw_line in contents.lines() {
             let line = strip_comments(raw_line).trim();
             if line.is_empty() {
@@ -229,6 +241,9 @@ impl RuntimeConfig {
                 continue;
             };
             let key = key.trim();
+            let Some(key) = folder_config_key(key, &active_keys) else {
+                continue;
+            };
             let value = value.trim();
 
             match key {
@@ -258,40 +273,40 @@ impl RuntimeConfig {
                         .map(|entry| normalize_app_name(&entry))
                         .collect::<Vec<_>>();
                 }
-                "file_scan_roots" => {
+                "folder_scan_roots" => {
                     let parsed = parse_csv(value)
                         .into_iter()
                         .map(|entry| expand_path(&entry, home.as_deref()))
                         .collect::<Vec<_>>();
                     if !parsed.is_empty() {
-                        self.file_scan_roots = parsed;
+                        self.folder_scan_roots = parsed;
                     }
                 }
-                "file_scan_extra_roots" => {
-                    self.file_scan_extra_roots = parse_csv(value)
+                "folder_scan_extra_roots" => {
+                    self.folder_scan_extra_roots = parse_csv(value)
                         .into_iter()
                         .map(|entry| expand_path(&entry, home.as_deref()))
                         .collect::<Vec<_>>();
                 }
-                "file_scan_depth" => {
+                "folder_scan_depth" => {
                     if let Some(parsed) = parse_positive_usize(value) {
-                        self.file_scan_depth =
-                            parsed.clamp(FILE_SCAN_DEPTH_MIN, FILE_SCAN_DEPTH_MAX);
+                        self.folder_scan_depth =
+                            parsed.clamp(FOLDER_SCAN_DEPTH_MIN, FOLDER_SCAN_DEPTH_MAX);
                     }
                 }
-                "file_scan_limit" => {
+                "folder_scan_limit" => {
                     if let Some(parsed) = parse_positive_usize(value) {
-                        self.file_scan_limit =
-                            parsed.clamp(FILE_SCAN_LIMIT_MIN, FILE_SCAN_LIMIT_MAX);
+                        self.folder_scan_limit =
+                            parsed.clamp(FOLDER_SCAN_LIMIT_MIN, FOLDER_SCAN_LIMIT_MAX);
                     }
                 }
-                "file_exclude_paths" => {
-                    self.file_exclude_paths = parse_csv(value)
+                "folder_exclude_paths" => {
+                    self.folder_exclude_paths = parse_csv(value)
                         .into_iter()
                         .map(|entry| expand_path(&entry, home.as_deref()))
                         .collect::<Vec<_>>();
                 }
-                "skip_dir_names" => {
+                "skip_dir_names" if value != LEGACY_DEFAULT_SKIPS => {
                     let parsed = parse_csv(value)
                         .into_iter()
                         .map(|entry| entry.to_lowercase())
@@ -311,24 +326,6 @@ impl RuntimeConfig {
                 "lazy_indexing_enabled" => {
                     if let Some(parsed) = parse_bool(value) {
                         self.lazy_indexing_enabled = parsed;
-                    }
-                }
-                _ if key.strip_prefix("ignored_patterns_").is_some() => {
-                    let parsed = parse_pattern_values(value);
-                    for pattern in parsed {
-                        let expanded = expand_path(&pattern, home.as_deref());
-                        let mut builder = GlobBuilder::new(&expanded);
-                        builder.literal_separator(true);
-                        if builder.build().is_err() {
-                            continue;
-                        }
-                        if !self
-                            .ignored_file_patterns
-                            .iter()
-                            .any(|existing| existing == &expanded)
-                        {
-                            self.ignored_file_patterns.push(expanded);
-                        }
                     }
                 }
                 "localized_app_names" => {
@@ -383,7 +380,10 @@ fn append_missing_default_config_entries(path: &Path) {
         };
 
         let key = key.trim();
-        if key.is_empty() || existing_keys.contains(key) {
+        let has_legacy = LEGACY_FOLDER_KEYS
+            .iter()
+            .any(|(new, old)| *new == key && existing_keys.contains(*old));
+        if key.is_empty() || existing_keys.contains(key) || has_legacy {
             continue;
         }
 
@@ -411,9 +411,68 @@ fn append_missing_default_config_entries(path: &Path) {
         .and_then(|mut file| std::io::Write::write_all(&mut file, appended.as_bytes()));
 }
 
+/// Honors a legacy setting only when its replacement is absent.
+fn folder_config_key<'a>(key: &'a str, active_keys: &HashSet<&str>) -> Option<&'a str> {
+    if let Some(&(new, _)) = LEGACY_FOLDER_KEYS.iter().find(|(_, old)| *old == key) {
+        return (!active_keys.contains(new)).then_some(new);
+    }
+    Some(key)
+}
+
 fn default_config_contents() -> String {
     let app_roots = default_app_scan_roots().join(",");
-    let file_roots = platform::file_scan_root_suffixes().join(",");
+    let folder_roots = platform::folder_scan_root_suffixes()
+        .iter()
+        .map(|suffix| if suffix.is_empty() { "~/" } else { suffix })
+        .collect::<Vec<_>>()
+        .join(",");
+    let skipped_names = SKIP_DIR_NAMES.join(",");
+    let shell_defaults = default_shell_config();
+    format!(
+        "# lumio configuration\n\
+# Generated on first launch. Edit values, then reload with Cmd+Shift+;\n\
+# (Ctrl+Shift+; on Linux and Windows).\n\
+\n\
+# Application and folder indexing\n\
+app_scan_roots={app_roots}\n\
+app_scan_depth=3\n\
+app_exclude_paths=\n\
+app_exclude_names=\n\
+folder_scan_roots={folder_roots}\n\
+folder_scan_extra_roots=\n\
+folder_scan_depth=4\n\
+folder_scan_limit=8000\n\
+folder_exclude_paths=\n\
+skip_dir_names={skipped_names}\n\
+lazy_indexing_enabled=true\n\
+# Localized app and System Settings names. macOS 15.4+ only. Slows the first\n\
+# index pass (~3ms -> ~35ms on a 134-app machine) and caches bundle metadata\n\
+# for the process lifetime.\n\
+localized_app_names=false\n\
+\n\
+# How long the main query survives while Lumio is hidden, in seconds. 0 clears\n\
+# it on every hide; a negative value keeps it indefinitely.\n\
+query_retention_seconds=30\n\
+\n\
+{shell_defaults}\
+# Search aliases (apps + System Settings). Format: alias_<keyword>=Term1|Term2|Term3\n\
+# The defaults below cover both macOS and Windows app catalogs; entries that don't\n\
+# exist on the current host simply won't match, so cross-platform lists are harmless.\n\
+alias_note=Notion|Obsidian|Notes|Apple Notes|Bear|Logseq|OneNote|Microsoft OneNote|Sticky Notes|Joplin\n\
+alias_code=Visual Studio Code|VSCode|Cursor|Windsurf|IntelliJ IDEA|PyCharm|WebStorm|Neovim|Xcode|Zed|Visual Studio|Notepad++|Sublime Text\n\
+alias_term=Terminal|iTerm|iTerm2|Ghostty|WezTerm|Alacritty|Kitty|Warp|Windows Terminal|PowerShell|Command Prompt|wsl\n\
+alias_chat=Slack|Discord|Telegram|Messages|Microsoft Teams|Teams|WhatsApp|Signal|Zoom\n\
+alias_music=Spotify|Apple Music|Music|YouTube Music|VLC|Windows Media Player|foobar2000\n\
+alias_brow=Arc|Google Chrome|Chrome|Firefox|Brave|Microsoft Edge|Edge|Brave Browser|Vivaldi|Opera\n"
+    )
+}
+
+fn default_shell_config() -> String {
+    if cfg!(target_os = "macos") {
+        return "# Folder opener (auto follows the system file viewer)\n# file_manager=auto\n\n"
+            .to_owned();
+    }
+
     // Windows reads as too transparent at the macOS/Linux baseline of 0.55
     // because we cannot use native Mica (the vibrancy DWM call breaks the
     // CSS-clipped rounded corners) and the CSS blur alone doesn't fully
@@ -426,43 +485,11 @@ fn default_config_contents() -> String {
         "0.55"
     };
     format!(
-        "# lumio configuration\n\
-# Generated on first launch. Edit values, then reload with Cmd+Shift+;\n\
-# (Ctrl+Shift+; on Linux and Windows).\n\
-\n\
-# Backend indexing (file_scan_depth: 1-12, file_scan_limit: 500-50000)\n\
-app_scan_roots={app_roots}\n\
-app_scan_depth=3\n\
-app_exclude_paths=\n\
-app_exclude_names=\n\
-file_scan_roots={file_roots}\n\
-file_scan_extra_roots=\n\
-file_scan_depth=4\n\
-file_scan_limit=8000\n\
-file_exclude_paths=\n\
-ignored_patterns_sample=\n\
-# File ignore patterns. Gitignore-style path globs: *, **, ?, [abc].\n\
-# Format: ignored_patterns_<group>=Pattern1|Pattern2|Pattern3\n\
-# macOS/Linux usually use ~/... or /... ; on Windows, C:\\... is the safest documented form and ~ expands to your home dir.\n\
-# ignored_patterns_browser=~/AppData/Local/BraveSoftware/**/*.log|~/AppData/Local/Google/Chrome/**/*.tmp\n\
-# ignored_patterns_sqlite=~/Documents/git/project/**/*.db-wal|~/Documents/git/project/**/*.db-shm\n\
-# ignored_patterns_temp=~/Downloads/*.tmp|~/Downloads/**/*.part\n\
-lazy_indexing_enabled=true\n\
-# Localized app and System Settings names. macOS 15.4+ only. Slows the first\n\
-# index pass (~3ms -> ~35ms on a 134-app machine) and caches bundle metadata\n\
-# for the process lifetime.\n\
-localized_app_names=false\n\
-skip_dir_names=node_modules,target,build,dist,library,applications,old firefox data,deriveddata,pods,vendor,out,coverage,tmp,cache,venv\n\
-\n\
-# How long the main query survives while Lumio is hidden, in seconds. 0 clears\n\
-# it on every hide; a negative value keeps it indefinitely.\n\
-query_retention_seconds=30\n\
-\n\
-# Preferred tools. Name the tool, not a command: Lumio knows how to drive it,\n\
+        "# Preferred tools. Name the tool, not a command: Lumio knows how to drive it,\n\
 # including running a terminal editor inside your terminal. Declare nothing and\n\
 # nothing changes. Editing uses text_editor on a file and code_editor on a\n\
 # folder; declaring only one of the two covers both.\n\
-# Acted on from the row's action menu, and from Cmd+E / Cmd+T (Ctrl elsewhere).\n\
+# Acted on from the row's action menu and keyboard shortcuts.\n\
 # text_editor=nvim\n\
 # code_editor=zed\n\
 # terminal=ghostty\n\
@@ -487,15 +514,7 @@ ui_border_green=1.0\n\
 ui_border_blue=1.0\n\
 ui_border_opacity=0.12\n\
 \n\
-# Search aliases (apps + System Settings). Format: alias_<keyword>=Term1|Term2|Term3\n\
-# The defaults below cover both macOS and Windows app catalogs; entries that don't\n\
-# exist on the current host simply won't match, so cross-platform lists are harmless.\n\
-alias_note=Notion|Obsidian|Notes|Apple Notes|Bear|Logseq|OneNote|Microsoft OneNote|Sticky Notes|Joplin\n\
-alias_code=Visual Studio Code|VSCode|Cursor|Windsurf|IntelliJ IDEA|PyCharm|WebStorm|Neovim|Xcode|Zed|Visual Studio|Notepad++|Sublime Text\n\
-alias_term=Terminal|iTerm|iTerm2|Ghostty|WezTerm|Alacritty|Kitty|Warp|Windows Terminal|PowerShell|Command Prompt|wsl\n\
-alias_chat=Slack|Discord|Telegram|Messages|Microsoft Teams|Teams|WhatsApp|Signal|Zoom\n\
-alias_music=Spotify|Apple Music|Music|YouTube Music|VLC|Windows Media Player|foobar2000\n\
-alias_brow=Safari|Arc|Google Chrome|Chrome|Firefox|Brave|Microsoft Edge|Edge|Brave Browser|Vivaldi|Opera\n"
+"
     )
 }
 
@@ -595,7 +614,6 @@ fn default_search_aliases() -> HashMap<String, Vec<String>> {
     aliases.insert(
         "brow".to_string(),
         vec![
-            "safari",
             "arc",
             "google chrome",
             "chrome",
@@ -621,11 +639,14 @@ fn default_app_scan_roots() -> Vec<String> {
         .collect()
 }
 
-fn default_file_scan_roots() -> Vec<String> {
+fn default_folder_scan_roots() -> Vec<String> {
     let home = user_home_dir().unwrap_or_else(|| ".".to_string());
-    platform::file_scan_root_suffixes()
+    platform::folder_scan_root_suffixes()
         .iter()
         .map(|suffix| {
+            if suffix.is_empty() {
+                return home.clone();
+            }
             PathBuf::from(&home)
                 .join(suffix)
                 .to_string_lossy()
@@ -795,17 +816,6 @@ fn parse_alias_values(value: &str) -> Vec<String> {
     values
 }
 
-fn parse_pattern_values(value: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    for raw in value.split('|') {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() && !values.iter().any(|entry| entry == trimmed) {
-            values.push(trimmed.to_string());
-        }
-    }
-    values
-}
-
 fn apply_alias_override(alias_key: &str, value: &str, aliases: &mut HashMap<String, Vec<String>>) {
     let normalized_key = normalize_for_search(alias_key.trim());
     if normalized_key.is_empty() {
@@ -867,15 +877,6 @@ mod tests {
         // UNC roots are stored with every backslash doubled and decode back.
         let parsed = parse_csv(r"\\\\server\\share\\apps,/Users/demo/Apps");
         assert_eq!(parsed, vec![r"\\server\share\apps", "/Users/demo/Apps"]);
-    }
-
-    #[test]
-    fn parse_pattern_values_trims_and_deduplicates_entries() {
-        // Case: " ~/Project/**/*.log | | ~/Project/**/*.tmp | ~/Project/**/*.log "
-        let parsed = parse_pattern_values(
-            " ~/Project/**/*.log | | ~/Project/**/*.tmp | ~/Project/**/*.log ",
-        );
-        assert_eq!(parsed, vec!["~/Project/**/*.log", "~/Project/**/*.tmp"]);
     }
 
     #[test]
@@ -947,33 +948,6 @@ mod tests {
         }
 
         assert_eq!(user_home_dir().as_deref(), Some("C:/Users/win-home"));
-    }
-
-    #[test]
-    fn skip_dir_names_from_config_are_appended_not_replaced() {
-        let tmp = std::env::temp_dir().join(format!(
-            "lumio-config-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after epoch")
-                .as_nanos()
-        ));
-
-        std::fs::write(&tmp, "skip_dir_names=vendor\n").expect("should write temporary config");
-
-        let mut config = RuntimeConfig::default();
-        config.apply_from_file(&tmp);
-
-        assert!(
-            config
-                .skip_dir_names
-                .iter()
-                .any(|name| name == "node_modules")
-        );
-        assert!(config.skip_dir_names.iter().any(|name| name == "vendor"));
-
-        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
@@ -1061,7 +1035,7 @@ mod tests {
     }
 
     /// The keys ship commented out: an existing config is not grown by lines it
-    /// did not ask for, and Cmd+E names the key to set at the point of use.
+    /// did not ask for.
     #[test]
     fn tool_keys_are_documented_but_not_enabled_by_default() {
         let defaults = default_config_contents();
@@ -1077,29 +1051,32 @@ mod tests {
         }
     }
 
-    /// `browser` parses, but no action reads it yet: Lumio has no URL row for it
-    /// to act on. Advertising it would make it a key a user can set and get
-    /// silence from, which is the trap `specs/preferred-tools.md` §6 calls out.
-    /// Document it here when something consumes it.
     #[test]
     fn unconsumed_tool_keys_are_not_advertised() {
-        // The assignment form, not the bare word: `ignored_patterns_browser=`
-        // is a different key that legitimately contains it.
         let defaults = default_config_contents();
-        for form in ["# browser=", "\nbrowser="] {
-            assert!(
-                !defaults.contains(form),
-                "{form:?} should not be advertised"
-            );
+        for key in lumio_tools::key::ALL {
+            if ADVERTISED_TOOL_KEYS.contains(&key) {
+                continue;
+            }
+            assert!(!defaults.contains(&format!("# {key}=")), "{key}");
+            assert!(!defaults.contains(&format!("\n{key}=")), "{key}");
         }
-
-        let unadvertised: Vec<_> = lumio_tools::key::ALL
-            .iter()
-            .filter(|key| !ADVERTISED_TOOL_KEYS.contains(key))
-            .collect();
-        assert_eq!(unadvertised, vec![&lumio_tools::key::BROWSER]);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_defaults_omit_removed_effects_and_keep_folder_opener() {
+        let defaults = default_config_contents();
+        for removed in ["ui_tint_", "ui_blur_", "window_opacity", "liquid_glass"] {
+            assert!(!defaults.contains(removed), "{removed}");
+        }
+        assert!(defaults.contains("# file_manager=auto"));
+    }
+
+    #[cfg(target_os = "macos")]
+    const ADVERTISED_TOOL_KEYS: &[&str] = &[lumio_tools::key::FILE_MANAGER];
+
+    #[cfg(not(target_os = "macos"))]
     const ADVERTISED_TOOL_KEYS: &[&str] = &[
         lumio_tools::key::TEXT_EDITOR,
         lumio_tools::key::CODE_EDITOR,
@@ -1194,180 +1171,36 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
-    #[test]
-    fn ignored_pattern_entries_are_loaded_from_config() {
-        // Case:
-        // ignored_patterns_logs=/Users/demo/Project/**/*.log | /Users/demo/Project/**/*.tmp
-        // ignored_patterns_more=/Users/demo/Project/**/*.tmp|[invalid
-        // lazy_indexing_enabled=false
-        let tmp = std::env::temp_dir().join(format!(
-            "lumio-config-test-ignored-patterns-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after epoch")
-                .as_nanos()
-        ));
-
-        std::fs::write(
-            &tmp,
-            "ignored_patterns_logs=/Users/demo/Project/**/*.log | /Users/demo/Project/**/*.tmp\nignored_patterns_more=/Users/demo/Project/**/*.tmp|[invalid\nlazy_indexing_enabled=false\n",
-        )
-        .expect("should write temporary config");
-
-        let mut config = RuntimeConfig::default();
-        config.apply_from_file(&tmp);
-
-        assert_eq!(
-            config.ignored_file_patterns,
-            vec![
-                "/Users/demo/Project/**/*.log".to_string(),
-                "/Users/demo/Project/**/*.tmp".to_string()
-            ]
-        );
-        assert!(!config.lazy_indexing_enabled);
-
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn ignored_pattern_empty_values_do_not_fail_parsing() {
-        // Case:
-        // ignored_patterns_empty=
-        // ignored_patterns_spaces= |  |
-        // lazy_indexing_enabled=false
-        let tmp = std::env::temp_dir().join(format!(
-            "lumio-config-test-ignored-patterns-empty-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after epoch")
-                .as_nanos()
-        ));
-
-        std::fs::write(
-            &tmp,
-            "ignored_patterns_empty=\nignored_patterns_spaces= |  |\nlazy_indexing_enabled=false\n",
-        )
-        .expect("should write temporary config");
-
-        let mut config = RuntimeConfig::default();
-        config.apply_from_file(&tmp);
-
-        assert!(config.ignored_file_patterns.is_empty());
-        assert!(!config.lazy_indexing_enabled);
-
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn ignored_pattern_windows_style_path_is_accepted() {
-        // Case: ignored_patterns_windows=C:\Users\me\AppData\Local\Temp\**\*.etl
-        let tmp = std::env::temp_dir().join(format!(
-            "lumio-config-test-ignored-patterns-windows-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after epoch")
-                .as_nanos()
-        ));
-
-        std::fs::write(
-            &tmp,
-            r"ignored_patterns_windows=C:\Users\me\AppData\Local\Temp\**\*.etl
-",
-        )
-        .expect("should write temporary config");
-
-        let mut config = RuntimeConfig::default();
-        config.apply_from_file(&tmp);
-
-        assert_eq!(
-            config.ignored_file_patterns,
-            vec![r"C:\Users\me\AppData\Local\Temp\**\*.etl".to_string()]
-        );
-
-        let _ = std::fs::remove_file(&tmp);
-    }
-
     // End-to-end across the seam the other tests skip: a Windows pattern goes
     // through the real config parse-and-store step, then is matched the exact
     // way `walk_files` (index/files.rs) does. The Windows tests elsewhere build
     // matchers from the raw pattern and never feed config's STORED output back
     // into the walk matcher, which is where the Windows path breaks.
-    #[test]
-    fn windows_pattern_from_config_ignores_backslash_candidate() {
-        let tmp = std::env::temp_dir().join(format!(
-            "lumio-config-test-ignored-patterns-walk-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after epoch")
-                .as_nanos()
-        ));
-        std::fs::write(
-            &tmp,
-            "ignored_patterns_win=C:\\Users\\me\\Temp\\**\\*.etl\n",
-        )
-        .expect("should write temporary config");
-
-        let mut config = RuntimeConfig::default();
-        config.apply_from_file(&tmp);
-        let _ = std::fs::remove_file(&tmp);
-
-        // Rebuild matchers exactly like `walk_files`, from the STORED patterns.
-        let matchers = config
-            .ignored_file_patterns
-            .iter()
-            .filter_map(|pattern| compile_ignore_matcher(pattern))
-            .collect::<Vec<_>>();
-
-        // Candidate as the `ignore` walker emits it on Windows: native
-        // backslashes, on-disk casing.
-        let candidate = r"C:\Users\Me\Temp\nested\trace.etl";
-        let ignored = matchers.iter().any(|(policy, glob_matcher)| {
-            glob_matcher.is_match(&*policy.normalize_for_matching(candidate))
-        });
-
-        assert!(
-            ignored,
-            "a Windows pattern loaded from config should ignore the matching backslash candidate"
-        );
-    }
-
     // Full flow for the Windows home form `~\`, across both steps the other
     // tests split: config.rs splits + dedups the raw values and stores each one
     // home-expanded (raw, not policy-normalized); files.rs builds the matcher
     // from that stored string. Uses an explicit Windows home so the assertion is
     // deterministic regardless of the machine's real HOME.
     #[test]
-    fn home_tilde_pattern_from_config_ignores_backslash_candidate() {
-        let home = Some("C:\\Users\\me");
-
-        // Step 1 (config.rs): split on `|`, trim, drop the duplicate.
-        let raw = parse_pattern_values(r" ~\Temp\**\*.log | ~\Temp\**\*.log | ~\Temp\**\*.log ");
-        assert_eq!(raw, vec![r"~\Temp\**\*.log".to_string()]);
-
-        // Step 2 (config.rs): store each home-expanded, still raw (un-normalized).
-        let stored: Vec<String> = raw
-            .iter()
-            .map(|pattern| expand_path(pattern, home))
-            .collect();
-        assert_eq!(stored, vec![r"C:\Users\me\Temp\**\*.log".to_string()]);
-
-        // Step 3 (files.rs): build the matcher from the stored pattern and match
-        // a candidate as the walker emits it on Windows (backslashes, on-disk
-        // casing).
-        let (policy, matcher) = compile_ignore_matcher(&stored[0]).expect("pattern should compile");
-        assert!(
-            matcher.is_match(&*policy.normalize_for_matching(r"C:\Users\Me\Temp\nested\trace.log")),
-            "a ~\\ home pattern from config should ignore the matching candidate"
+    fn new_folder_options_take_precedence_over_legacy_options() {
+        let config = config_from(
+            "folder_scan_depth=9\nfile_scan_depth=2\nfile_scan_limit=1234",
+            "folder-keys",
         );
-        // A different extension under the same dir stays visible.
-        assert!(
-            !matcher
-                .is_match(&*policy.normalize_for_matching(r"C:\Users\Me\Temp\nested\trace.txt"))
+        assert_eq!(config.folder_scan_depth, 9);
+        assert_eq!(config.folder_scan_limit, 1234);
+    }
+
+    #[test]
+    fn generated_legacy_skips_do_not_hide_library() {
+        let config = config_from(
+            &format!("skip_dir_names={LEGACY_DEFAULT_SKIPS}\n"),
+            "legacy-default-skips",
         );
+        assert!(!config.skip_dir_names.iter().any(|name| name == "library"));
+        let explicit = config_from("skip_dir_names=library,.secret\n", "explicit-skips");
+        assert!(explicit.skip_dir_names.iter().any(|name| name == "library"));
+        assert!(explicit.skip_dir_names.iter().any(|name| name == ".secret"));
     }
 
     #[test]
@@ -1382,7 +1215,7 @@ mod tests {
         );
         assert!(contents.contains("alias_chat=Slack|Discord|Telegram|Messages"));
         assert!(contents.contains("alias_music=Spotify|Apple Music|Music"));
-        assert!(contents.contains("alias_brow=Safari|Arc|Google Chrome|Chrome|Firefox|Brave"));
+        assert!(contents.contains("alias_brow=Arc|Google Chrome|Chrome|Firefox|Brave"));
     }
 
     #[test]
@@ -1394,8 +1227,8 @@ mod tests {
         );
         // A `#` after whitespace still starts a trailing comment.
         assert_eq!(
-            strip_comments("file_scan_depth=6  # my note"),
-            "file_scan_depth=6  "
+            strip_comments("folder_scan_depth=6  # my note"),
+            "folder_scan_depth=6  "
         );
         // And a full-line comment is still a comment.
         assert_eq!(strip_comments("# UI theme"), "");
@@ -1428,7 +1261,7 @@ mod tests {
             "a commented-out key must not be appended back as a live key"
         );
         assert!(
-            contents.contains("\nfile_scan_limit=8000"),
+            contents.contains("\nfolder_scan_limit=8000"),
             "keys the user never mentioned must still be appended, or the update did nothing \
              and this test would pass for the wrong reason"
         );

@@ -10,23 +10,23 @@ final class QuickBubblesTests: XCTestCase {
 
     func testJunkRepeatsAndExtrasAreFixed() {
         XCTAssertEqual(
-            QuickBubbles.parse(" Process, bogus, process, app"),
-            ["process", "app", "folder", "doc"])
+            QuickBubbles.parse(" doc, Process, bogus, process, app, folder"),
+            ["process", "app", "folder"])
     }
 
     func testSettingASlotSwapsWhenTaken() {
         let defaults = QuickBubbles.defaultCodes
         XCTAssertEqual(
-            QuickBubbles.setting(slot: 0, to: "doc", in: defaults),
-            ["doc", "folder", "app", "process"])
+            QuickBubbles.setting(slot: 0, to: "process", in: defaults),
+            ["process", "folder", "app"])
         XCTAssertEqual(QuickBubbles.setting(slot: 0, to: "bogus", in: defaults), defaults)
     }
 
     func testMovingASlot() {
         let defaults = QuickBubbles.defaultCodes
         XCTAssertEqual(
-            QuickBubbles.moving(slot: 3, by: -1, in: defaults),
-            ["app", "folder", "process", "doc"])
+            QuickBubbles.moving(slot: 2, by: -1, in: defaults),
+            ["app", "process", "folder"])
         XCTAssertEqual(QuickBubbles.moving(slot: 0, by: -1, in: defaults), defaults)
     }
 }

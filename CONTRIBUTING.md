@@ -15,7 +15,7 @@ For a feature request, describe the problem first, then the behavior you'd like.
 
 ## Development setup
 
-**Requirements:** macOS 15+, Xcode 26 (its SDK is needed for Liquid Glass), Rust stable and nightly (the Xcode build phase builds the Rust bridge with `cargo +nightly`), GNU Make.
+**Requirements:** macOS 15+, Xcode 26, Rust stable and nightly (the Xcode build phase builds the Rust bridge with `cargo +nightly`), GNU Make.
 
 ```text
 apps/macos/LauncherApp/   Swift app (Xcode project: lumio-app.xcodeproj)

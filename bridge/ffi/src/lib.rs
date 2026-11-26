@@ -7,8 +7,6 @@ mod runtime_config;
 mod search_api;
 mod shared_store;
 mod state;
-mod tools_api;
-mod url_history_api;
 mod usage_api;
 
 use lumio_engine::QueryEngine;
@@ -55,9 +53,7 @@ pub extern "C" fn lumio_reload_config() -> bool {
             return false;
         }
         state::refresh_engine_cache();
-        // The config may have added excluded/skipped folders. Rows already in the
-        // DB for them are only pruned by a walk, so ask for one (scoped to all
-        // sources) rather than declaring the index clean.
+        // Changes to app scan roots or exclusions require a new walk.
         state::mark_index_dirty();
         true
     }))
@@ -95,31 +91,6 @@ pub extern "C" fn lumio_free_cstring(ptr: *mut c_char) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         state::free_json_allocation(ptr)
     }));
-}
-
-/// Runs `action` on the row at `path`. Shell actions are performed here,
-/// detached, and come back as `{"kind":"performed"}` or `{"kind":"failed"}`; an
-/// `application` result is handed back for the shell to launch itself.
-#[unsafe(no_mangle)]
-pub extern "C" fn lumio_perform_tool_action_json(
-    action: *const c_char,
-    candidate_id: *const c_char,
-    row_title: *const c_char,
-    path: *const c_char,
-    is_dir: bool,
-    ancestors_json: *const c_char,
-) -> *mut c_char {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tools_api::lumio_perform_tool_action_json_impl(
-            action,
-            candidate_id,
-            row_title,
-            path,
-            is_dir,
-            ancestors_json,
-        )
-    }))
-    .unwrap_or(std::ptr::null_mut())
 }
 
 /// The config file to read and write. Pass `dev` for a development build, which
@@ -162,24 +133,6 @@ pub extern "C" fn lumio_classify_url_json(query: *const c_char) -> *mut c_char {
     .unwrap_or(std::ptr::null_mut())
 }
 
-/// Records that `url` was opened through the launcher. Returns false on failure.
-#[unsafe(no_mangle)]
-pub extern "C" fn lumio_record_url_hit(url: *const c_char) -> bool {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        url_history_api::lumio_record_url_hit_impl(url)
-    }))
-    .unwrap_or(false)
-}
-
-/// JSON array of up to `limit` remembered URLs matching `query` (or `[]`).
-#[unsafe(no_mangle)]
-pub extern "C" fn lumio_recent_urls_json(query: *const c_char, limit: u32) -> *mut c_char {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        url_history_api::lumio_recent_urls_json_impl(query, limit)
-    }))
-    .unwrap_or(std::ptr::null_mut())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,8 +151,7 @@ mod tests {
 
     /// Config the whole binary runs against, so no test reads the developer's
     /// real `~/.lumio/config`.
-    const TEST_CONFIG: &str =
-        "lazy_indexing_enabled=true\nfile_scan_roots=\nfile_scan_extra_roots=\napp_scan_roots=\n";
+    const TEST_CONFIG: &str = "lazy_indexing_enabled=true\napp_scan_roots=\n";
 
     /// Serializes the tests that share process-global state, and publishes the
     /// scratch config path exactly once, inside the `OnceLock` initializer: every

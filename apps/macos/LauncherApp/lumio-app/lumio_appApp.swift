@@ -57,17 +57,6 @@ struct lumio_appApp: App {
             return SettingsWindowController.renderSnapshot(pane: page, to: target) ? 0 : 1
         }
 
-        // `--render-card <file.png> <path> [preview]`: draw the detail card for a file and exit.
-        if let index = CommandLine.arguments.firstIndex(of: "--render-card"),
-           let target = CommandLine.arguments.dropFirst(index + 1).first,
-           let path = CommandLine.arguments.dropFirst(index + 2).first
-        {
-            _ = NSApplication.shared
-            ConfigPathResolver.applyDefaultConfigEnvironmentIfNeeded()
-            let preview = CommandLine.arguments.dropFirst(index + 3).first == "preview"
-            return SpotlightPreviewView.renderSample(path: path, to: target, preview: preview) ? 0 : 1
-        }
-
         // `--browser-check <file>`: write what Lumio can read of your browsers' data, then exit.
         // Started with `open -a Lumio --args --browser-check <file>` so macOS judges Lumio itself
         // (and shows its permission prompt), not the terminal that launched it.
@@ -79,18 +68,7 @@ struct lumio_appApp: App {
                 lines.append("search \"\(term)\": \(BrowserHistory.search(term, limit: 50).count) history pages, "
                     + "\(BrowserBookmarks.search(term, limit: 50).count) bookmarks, "
                     + "\(BrowserBookmarks.all().count) bookmarks in total, "
-                    + "\(BrowserBookmarks.folderNames().count) bookmark folders, "
-                    + "\(BrowserKeywords.all().count) saved search engines")
-                // The suggestion request, run from inside the app (blocks this short-lived process).
-                let done = DispatchSemaphore(value: 0)
-                let answer = DiagnosisAnswer()
-                Task.detached {
-                    answer.set(await WebSuggestions.diagnose(term))
-                    done.signal()
-                }
-                _ = done.wait(timeout: .now() + 8)
-                lines.append("web suggestions: \(answer.value)")
-                lines.append("web_suggestions mode: \(WebSuggestions.mode.rawValue)")
+                    + "\(BrowserBookmarks.folderNames().count) bookmark folders")
             }
             lines.append("window search (Accessibility): \(AccessibilityAccess.summary(AccessibilityAccess.check()))")
             lines.append("  macOS says allowed: \(AccessibilityAccess.isTrusted); its list says: \(AccessibilityAccess.record()); "
@@ -102,7 +80,7 @@ struct lumio_appApp: App {
             let found = OpenWindows.shared.snapshot
             lines.append("  open windows read: \(found.count) in \(Set(found.map(\.pid)).count) apps")
             let index = IndexStats.read()
-            lines.append("index: \(index.files) files, \(index.folders) folders, \(index.apps) apps; spotlight on: "
+            lines.append("index: \(index.folders) folders, \(index.apps) apps; spotlight on: "
                 + "\(index.spotlightOn.map(String.init) ?? "unknown")")
             let report = lines.joined(separator: "\n") + "\n"
             if let target {
@@ -242,15 +220,4 @@ struct lumio_appApp: App {
             }
         }
     }
-}
-
-/// One answer written by a detached task and read by the thread that waits for it.
-/// The semaphore orders the write before the read, so the lock is only belt and braces.
-nonisolated private final class DiagnosisAnswer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var text = "no answer in 8 s"
-
-    var value: String { lock.withLock { text } }
-
-    func set(_ newValue: String) { lock.withLock { text = newValue } }
 }

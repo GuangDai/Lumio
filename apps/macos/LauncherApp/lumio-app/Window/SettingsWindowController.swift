@@ -125,7 +125,7 @@ extension SettingsWindowController {
     static func renderSnapshot(pane: SettingsPane, to path: String, size: NSSize = NSSize(width: 900, height: 640)) -> Bool {
         ThemeSettingsView.initialPane = pane
         let view = NSHostingView(
-            rootView: SettingsWindowRoot(solidBackground: true)
+            rootView: SettingsWindowRoot()
                 .environmentObject(AppUIState.shared)
                 .environmentObject(ThemeStore.shared)
                 .frame(width: size.width, height: size.height)
@@ -145,9 +145,7 @@ extension SettingsWindowController {
 }
 
 private struct SettingsWindowRoot: View {
-    /// A plain dark fill instead of the window blur (which draws nothing off screen).
-    var solidBackground = false
-
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject var themeStore: ThemeStore
 
     var body: some View {
@@ -155,11 +153,7 @@ private struct SettingsWindowRoot: View {
             .padding(20)
             .frame(minWidth: 680, minHeight: 520)
             .background {
-                if solidBackground {
-                    Color(white: 0.14)
-                } else {
-                    VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow).ignoresSafeArea()
-                }
+                windowSurfaceColor(isDark: colorScheme == .dark).ignoresSafeArea()
             }
     }
 }

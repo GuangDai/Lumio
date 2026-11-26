@@ -53,10 +53,10 @@ mod tests {
 
     #[test]
     fn a_mode_name_becomes_its_query() {
-        let parsed = parse(&["files", "report"]);
+        let parsed = parse(&["apps", "editor"]);
 
         assert_eq!(parsed["kind"], "query");
-        assert_eq!(parsed["text"], "f\"report");
+        assert_eq!(parsed["text"], "a\"editor");
     }
 
     #[test]
@@ -100,7 +100,7 @@ mod tests {
         let text = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
         crate::lumio_free_cstring(ptr);
 
-        assert!(text.contains("files"));
+        assert!(text.contains("apps") && !text.lines().any(|line| line.starts_with("files")));
         assert!(text.contains("processes"));
     }
 }

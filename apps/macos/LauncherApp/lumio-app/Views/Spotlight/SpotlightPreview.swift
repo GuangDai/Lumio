@@ -2,16 +2,6 @@
 //  SpotlightPreview.swift
 //  lumio-app
 //
-//  Preview pane on the right of the panel. Layout follows the legacy launcher's preview
-//  (ResultPreviewView): large icon, name, kind label + size, content (syntax-highlighted
-//  code / QuickLook image / folder listing), then path + modified date.
-//
-//  Painted with system colors rather than the theme: this pane is Liquid Glass and switches
-//  light/dark with the system, while theme colors could be light text on light glass.
-//  Core pieces reused from the legacy launcher: SyntaxHighlighter + HighlightedTextView,
-//  QuickLookPreviewImage, FolderListingService.
-//
-
 import AppKit
 import SwiftUI
 
@@ -20,21 +10,16 @@ import SwiftUI
 struct PreviewAction: Identifiable {
     let id: String
     let label: String
-    /// Shorter text for the compact strip ("Show" for "Show in Path Finder").
-    var short: String? = nil
     let symbol: String
     var shortcut: String? = nil
     let run: () -> Void
 }
 
-/// A tag chip on the detail card (file, .psd, the parent folder, the site…): click to narrow
-/// the search to it, like Fluent Search's result tags.
+/// A chip for narrowing the search to a local result category.
 struct PreviewChip: Identifiable {
     let id: String
     let label: String
     var symbol: String? = nil
-    /// An app's path, to show its icon on the chip.
-    var appPath: String? = nil
     let run: () -> Void
 }
 
@@ -42,46 +27,32 @@ struct SpotlightPreviewView: View {
     let item: SpotlightItem
     /// Tag chips for this result.
     var chips: [PreviewChip] = []
-    /// false = the details card (info, chips, actions); true = the file's preview. ⌥P toggles.
-    var showsPreview = false
-    var onTogglePreview: () -> Void = {}
-    /// Quick actions for this row. Apps and links get a full list (their pane is otherwise
-    /// empty); files and folders get a compact strip above the preview.
     var actions: [PreviewAction] = []
+    var selectedActionID: String? = nil
     /// ps" / :kill — process details (loaded on selection) and CPU (measured on Enter).
     var processDetail: ProcessDetail? = nil
     var processCPU: Double? = nil
     var measuringCPU = false
-    /// A file or folder in the folder listing was clicked: (path, isFolder).
-    var onOpenPath: (String, Bool) -> Void = { _, _ in }
-
     @State private var info = Info()
-    @State private var folder: FolderListing?
 
     /// Extra info read from disk when a row is selected.
     struct Info {
         var detail: String?
         var modified: String?
         var version: String?
-        /// "Documents › Photoshop Projects › name.psd"
+        /// "Applications › Calendar.app"
         var location: String?
         /// "2 years ago"
         var modifiedAgo: String?
-        var size: String?
     }
 
     /// Results that get the Fluent-style card: something to open, with actions.
     private var usesCard: Bool {
-        !actions.isEmpty && [.doc, .folder, .app, .url, .tab, .web, .setting, .window].contains(item.kind)
-    }
-
-    /// Files and folders have a real preview to switch to; apps and links only have the card.
-    private var hasPreview: Bool {
-        (item.kind.isDocument || item.kind == .folder) && item.target?.hasPrefix("/") == true
+        !actions.isEmpty && [.app, .folder, .url, .tab, .setting, .window].contains(item.kind)
     }
 
     var body: some View {
-        if usesCard, !(hasPreview && showsPreview) {
+        if usesCard {
             card
         } else {
             classic
@@ -90,32 +61,38 @@ struct SpotlightPreviewView: View {
 
     /// Fluent Search's detail card: big icon, name, facts, tag chips, then every action.
     private var card: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 11) {
-                SpotlightTile(item: item, size: 68)
-                    .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
-                    .padding(.top, 6)
-                Text(item.name)
-                    .font(.system(size: 15.5, weight: .semibold))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                cardFacts
-                if !chips.isEmpty {
-                    ChipFlow(spacing: 6) {
-                        ForEach(chips) { chip in PreviewChipButton(chip: chip) }
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                VStack(spacing: 11) {
+                    SpotlightTile(item: item, size: 68)
+                        .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+                        .padding(.top, 6)
+                    Text(item.name)
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    cardFacts
+                    if !chips.isEmpty {
+                        ChipFlow(spacing: 6) {
+                            ForEach(chips) { chip in PreviewChipButton(chip: chip) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    actionList
                 }
-                actionList
+                .frame(maxWidth: .infinity)
+                .padding(16)
             }
-            .frame(maxWidth: .infinity)
-            .padding(16)
+            .scrollIndicators(.never)
+            .onChange(of: selectedActionID, initial: true) { _, selected in
+                if let selected {
+                    proxy.scrollTo("action|\(selected)")
+                }
+            }
         }
-        .scrollIndicators(.never)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipped()
-        .overlay(alignment: .topTrailing) { paneButtons }
         .task(id: item.id) {
             // Off the main thread like `classic`: the top result's card is rebuilt on each
             // keystroke, and a disk read here stalled typing.
@@ -127,20 +104,19 @@ struct SpotlightPreviewView: View {
         }
     }
 
-    /// Location / Modified / Size (files), Url (links), Version (apps).
+    /// App and folder metadata, or the address and owner of another result.
     @ViewBuilder
     private var cardFacts: some View {
         let link = item.tab?.url ?? item.target.flatMap { $0.hasPrefix("http") ? $0 : nil }
-        if info.location != nil || info.modifiedAgo != nil || info.size != nil || info.version != nil || link != nil
+        if info.location != nil || info.modifiedAgo != nil || info.version != nil || link != nil
             || item.kind == .window
         {
             VStack(alignment: .leading, spacing: 5) {
-                if let link { factRow("Url", link) }
+                if let link { factRow("URL", link) }
                 if item.kind == .window, let app = item.meta { factRow("Window", app) }
                 if let location = info.location { factRow("Location", location) }
                 if let version = info.version { factRow("Version", version) }
                 if let modified = info.modifiedAgo { factRow("Modified", modified) }
-                if let size = info.size { factRow("Size", size) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -160,87 +136,40 @@ struct SpotlightPreviewView: View {
         .font(.system(size: 12.5))
     }
 
-    /// Top-right corner: switch between the card and the preview (⌥P), and Quick Look.
-    private var paneButtons: some View {
-        HStack(spacing: 4) {
-            if hasPreview, usesCard {
-                PreviewToggleButton(showingPreview: showsPreview, action: onTogglePreview)
-            }
-            if item.kind.isDocument, item.target?.hasPrefix("/") == true {
-                PreviewExpandButton { SpotlightQuickLook.show(item: item) }
-            }
-        }
-        .padding(12)
-    }
-
     private var classic: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if usesActionList {
-                // Scrolls rather than overflowing the pane when the panel is short.
-                ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        content
-                        actionList
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-                .scrollIndicators(.never)
+            content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            } else {
-                if !actions.isEmpty { actionStrip }
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
             details
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
-        .overlay(alignment: .topTrailing) { paneButtons }
         .task(id: item.id) {
             // Disk reads (attributes, Info.plist) stay off the main thread: arrowing through
             // results must never wait on a slow volume.
             let current = item
             info = Info(detail: Self.immediateDetail(for: current))
-            folder = nil
             let loaded = await Task.detached(priority: .userInitiated) { Self.loadInfo(for: current) }.value
             guard !Task.isCancelled else { return }
             info = loaded
-            guard item.kind == .folder, let path = item.target else { return }
-            // Dwell like QuickLookPreviewImage: skimming past quickly doesn't list anything.
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled else { return }
-            let listing = await FolderListingService.list(path: path)
-            guard !Task.isCancelled else { return }
-            folder = listing
-            if let listing { info.detail = Self.countText(listing) }
         }
     }
 
     // MARK: - Quick actions
 
-    private var usesActionList: Bool {
-        !actions.isEmpty && [.app, .url, .tab, .web, .setting].contains(item.kind)
-    }
-
-    /// Full list, first action highlighted (it is what ⏎ does).
+    /// Highlights the keyboard selection or, outside the detail page, the default action.
     private var actionList: some View {
         VStack(spacing: 2) {
             ForEach(Array(actions.enumerated()), id: \.element.id) { index, action in
-                PreviewActionRow(action: action, primary: index == 0)
-            }
-        }
-    }
-
-    /// Compact buttons for files and folders, so the preview keeps its room.
-    private var actionStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
-                // The first few: the rest are one ⌥P (details card) or ⌘K away.
-                ForEach(Array(actions.prefix(5))) { action in
-                    PreviewActionChip(action: action)
-                }
+                let selected = action.id == selectedActionID
+                PreviewActionRow(
+                    action: action,
+                    highlighted: selected || (selectedActionID == nil && index == 0),
+                    selected: selected
+                )
+                .id("action|\(action.id)")
             }
         }
     }
@@ -280,23 +209,6 @@ struct SpotlightPreviewView: View {
     @ViewBuilder
     private var content: some View {
         switch item.kind {
-        case .doc:
-            if let path = item.target {
-                if QuickLookPreviewService.isTextFile(path: path) {
-                    SpotlightCodePreview(path: path)
-                } else {
-                    QuickLookPreviewImage(path: path, maxHeight: .infinity)
-                }
-            }
-        case .folder:
-            if let folder, let path = item.target {
-                folderList(folder, path: path)
-            }
-        case .web where item.target != nil:
-            // A search tag's search row: the exact address it opens.
-            note(item.target ?? "", key: "⏎", action: "search")
-        case .web:
-            SpotlightWebInfoView(term: item.name)
         case .tab:
             note(item.tab?.url ?? item.target ?? "", key: "⏎", action: "switch to this tab")
         case .tagHint:
@@ -324,7 +236,7 @@ struct SpotlightPreviewView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .process:
             processContent
-        case .app, .cmd:
+        case .app, .folder, .cmd:
             EmptyView()
         }
     }
@@ -391,35 +303,6 @@ struct SpotlightPreviewView: View {
         .foregroundStyle(.secondary)
     }
 
-    private func folderList(_ listing: FolderListing, path: String) -> some View {
-        Group {
-            if listing.items.isEmpty {
-                Text("Empty folder")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 16)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        // Newest first; click opens, drag carries the file to another app.
-                        ForEach(Array(listing.items.enumerated()), id: \.offset) { _, entry in
-                            FolderEntryRow(
-                                entry: entry,
-                                path: (path as NSString).appendingPathComponent(entry.name),
-                                onOpen: onOpenPath
-                            )
-                        }
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 6)
-                }
-                .scrollIndicators(.never)
-            }
-        }
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
     // MARK: - Bottom details
 
     @ViewBuilder
@@ -466,7 +349,7 @@ struct SpotlightPreviewView: View {
         case .process:
             info.detail = item.meta
             return info
-        case .app, .doc, .folder:
+        case .app, .folder:
             break
         default:
             return info
@@ -480,28 +363,17 @@ struct SpotlightPreviewView: View {
             info.modifiedAgo = relative.localizedString(for: date, relativeTo: Date())
         }
         info.location = Self.breadcrumb(path)
-        switch item.kind {
-        case .app:
-            // Read the plist directly: `Bundle(path:)` instances are cached by Foundation for the
-            // life of the process, so previewing many apps would leak one bundle object each.
-            let plistURL = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
-            let plist = NSDictionary(contentsOf: plistURL)
-            info.version = plist?["CFBundleShortVersionString"] as? String
-                ?? plist?["CFBundleVersion"] as? String
-            info.detail = info.version.map { "Version \($0)" }
-        case .doc:
-            if let size = attrs?[.size] as? Int64 {
-                info.detail = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
-                info.size = info.detail
-            }
-        default:
-            break
-        }
+        guard item.kind == .app else { return info }
+        // Read the plist directly to avoid retaining a cached Bundle for every app.
+        let plistURL = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
+        let plist = NSDictionary(contentsOf: plistURL)
+        info.version = plist?["CFBundleShortVersionString"] as? String
+            ?? plist?["CFBundleVersion"] as? String
+        info.detail = info.version.map { "Version \($0)" }
         return info
     }
 
-    /// "/Users/me/Documents/Photoshop Projects/a.psd" → "Documents › Photoshop Projects › a.psd"
-    /// (the last four parts, from the home folder down).
+    /// A readable path of up to four components, relative to the home directory when possible.
     nonisolated private static func breadcrumb(_ path: String) -> String {
         let home = NSHomeDirectory()
         let shown = path.hasPrefix(home + "/") ? String(path.dropFirst(home.count + 1)) : path
@@ -509,179 +381,37 @@ struct SpotlightPreviewView: View {
         if parts.count > 4 { parts = ["…"] + parts.suffix(4) }
         return parts.joined(separator: " › ")
     }
-
-    private static func countText(_ listing: FolderListing) -> String? {
-        var parts: [String] = []
-        if listing.folderCount > 0 { parts.append("\(listing.folderCount) folders") }
-        if listing.fileCount > 0 { parts.append("\(listing.fileCount) files") }
-        return parts.isEmpty ? nil : parts.joined(separator: ", ")
-    }
 }
 
-// MARK: - Syntax-highlighted code
-
-/// Like the legacy launcher's TextFilePreview (reads the first 64 KB off the main thread,
-/// highlights, caches by mtime), but paints background/text with system colors.
-struct SpotlightCodePreview: View {
-    let path: String
-
-    nonisolated private static let displayByteCap = 64 * 1024
-
-    nonisolated private final class Highlighted: @unchecked Sendable {
-        let text: NSAttributedString
-        let cacheKey: String?
-        init(_ text: NSAttributedString, _ cacheKey: String?) {
-            self.text = text
-            self.cacheKey = cacheKey
-        }
-    }
-
-    @State private var content = NSAttributedString(string: "")
-
-    var body: some View {
-        HighlightedTextView(
-            attributed: content,
-            font: .monospacedSystemFont(ofSize: 12, weight: .regular),
-            defaultColor: .secondaryLabelColor
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .task(id: path) {
-            let p = path
-            if let key = Self.cacheKey(for: p), let cached = HighlightedTextCache.get(key) {
-                content = cached
-                return
-            }
-            content = NSAttributedString(string: "")
-            // Skimming past quickly doesn't read the file.
-            try? await Task.sleep(for: .milliseconds(150))
-            guard !Task.isCancelled else { return }
-            let result = await Task.detached(priority: .userInitiated) { () -> Highlighted in
-                guard let data = try? Data(contentsOf: URL(fileURLWithPath: p), options: [.mappedIfSafe]) else {
-                    return Highlighted(NSAttributedString(string: ""), nil)
-                }
-                let text = String(decoding: data.prefix(Self.displayByteCap), as: UTF8.self)
-                return Highlighted(SyntaxHighlighter.highlight(text, path: p), Self.cacheKey(for: p))
-            }.value
-            guard !Task.isCancelled else { return }
-            content = result.text
-            if let key = result.cacheKey { HighlightedTextCache.set(key, result.text) }
-        }
-    }
-
-    nonisolated private static func cacheKey(for path: String) -> String? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let mtime = attrs[.modificationDate] as? Date,
-              let size = attrs[.size] as? Int64
-        else { return nil }
-        return HighlightedTextCache.key(path: path, mtime: mtime, size: size)
-    }
-}
-
-
-/// Web tab: a short Wikipedia summary of the typed term (like Look Up's Siri Knowledge),
-/// falling back to the plain "search Google" note when nothing is found.
-struct SpotlightWebInfoView: View {
-    let term: String
-
-    private struct Summary {
-        var title: String
-        var subtitle: String?
-        var extract: String
-        var url: URL?
-    }
-
-    private enum Phase { case loading, found(Summary), none }
-    @State private var phase: Phase = .loading
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            switch phase {
-            case .loading:
-                Text("Looking up “\(term)”…").font(.system(size: 14)).foregroundStyle(.secondary)
-            case .found(let s):
-                Text(s.title).font(.system(size: 15, weight: .semibold))
-                if let sub = s.subtitle {
-                    Text(sub).font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                ScrollView {
-                    Text(s.extract)
-                        .font(.system(size: 13))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .scrollIndicators(.never)
-                Text("Wikipedia").font(.system(size: 11)).foregroundStyle(.tertiary)
-            case .none:
-                Text("No summary found. Search Google for “\(term)”.")
-                    .font(.system(size: 14)).foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                Text("⏎").font(.system(size: 12, weight: .semibold))
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                Text("open browser").font(.system(size: 13)).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .task(id: term) { await load() }
-    }
-
-    private func load() async {
-        phase = .loading
-        try? await Task.sleep(nanoseconds: 300_000_000)  // debounce typing
-        if Task.isCancelled { return }
-        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let enc = trimmed.replacingOccurrences(of: " ", with: "_")
-                .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "https://en.wikipedia.org/api/rest_v1/page/summary/\(enc)?redirect=true")
-        else { phase = .none; return }
-        var req = URLRequest(url: url, timeoutInterval: 6)
-        req.setValue("Lumio", forHTTPHeaderField: "User-Agent")
-        do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            if Task.isCancelled { return }
-            guard (resp as? HTTPURLResponse)?.statusCode == 200,
-                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let extract = json["extract"] as? String, !extract.isEmpty,
-                  (json["type"] as? String) != "disambiguation"
-            else { phase = .none; return }
-            phase = .found(Summary(
-                title: json["title"] as? String ?? trimmed,
-                subtitle: json["description"] as? String,
-                extract: extract, url: nil))
-        } catch {
-            if !Task.isCancelled { phase = .none }
-        }
-    }
-}
-
-/// A row of the quick actions list: icon, label, shortcut. The first is filled like Fluent's.
+/// A row of the actions list with the shortcut for its current state.
 private struct PreviewActionRow: View {
     let action: PreviewAction
-    let primary: Bool
+    let highlighted: Bool
+    let selected: Bool
     @State private var hovering = false
 
     var body: some View {
+        let shortcut = selected ? "⏎" : action.shortcut
         Button(action: action.run) {
             HStack(spacing: 10) {
                 Image(systemName: action.symbol)
                     .font(.system(size: 13, weight: .medium))
                     .frame(width: 18)
                 Text(action.label)
-                    .font(.system(size: 13.5, weight: primary ? .semibold : .regular))
+                    .font(.system(size: 13.5, weight: highlighted ? .semibold : .regular))
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                if let shortcut = action.shortcut {
+                if let shortcut {
                     Text(shortcut)
                         .font(.system(size: 12))
                         .opacity(0.7)
                 }
             }
-            .foregroundStyle(primary ? Color.white : Color.primary)
+            .foregroundStyle(highlighted ? Color.white : Color.primary)
             .padding(.horizontal, 11)
             .padding(.vertical, 6)
             .background(
-                primary ? Color(nsColor: .systemBlue).opacity(hovering ? 1 : 0.9)
+                highlighted ? Color(nsColor: .systemBlue).opacity(hovering ? 1 : 0.9)
                     : Color.primary.opacity(hovering ? 0.1 : 0),
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
@@ -689,97 +419,8 @@ private struct PreviewActionRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help(action.shortcut.map { "\(action.label)  \($0)" } ?? action.label)
-    }
-}
-
-private struct PreviewActionChip: View {
-    let action: PreviewAction
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action.run) {
-            HStack(spacing: 5) {
-                Image(systemName: action.symbol)
-                    .font(.system(size: 11, weight: .medium))
-                // An empty short label = icon only (the tooltip names it).
-                if action.short != "" {
-                    Text(action.short ?? action.label)
-                        .font(.system(size: 12))
-                        .lineLimit(1)
-                }
-            }
-            .fixedSize()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color.primary.opacity(hovering ? 0.16 : 0.08), in: Capsule())
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(action.shortcut.map { "\(action.label)  \($0)" } ?? action.label)
-    }
-}
-
-/// One line of a folder's listing in the preview: icon, name, how recent, size. Clickable.
-private struct FolderEntryRow: View {
-    let entry: FolderEntry
-    let path: String
-    let onOpen: (String, Bool) -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button {
-            onOpen(path, entry.isDir)
-        } label: {
-            HStack(spacing: 9) {
-                Image(nsImage: RowIconCache.icon(forFile: path))
-                    .resizable()
-                    .frame(width: 18, height: 18)
-                Text(entry.name)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 8)
-                Text(detail)
-                    .font(.system(size: 11.5).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .padding(.horizontal, 6)
-            .frame(height: 26)
-            .background(Color.primary.opacity(hovering ? 0.1 : 0), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .onDrag { NSItemProvider(contentsOf: URL(fileURLWithPath: path)) ?? NSItemProvider() }
-        .help("Open \(entry.name)")
-    }
-
-    /// "2d · 285.1 MB" (files) or "2d" (folders).
-    private var detail: String {
-        var parts: [String] = []
-        if let modified = entry.modified { parts.append(Self.ago(modified)) }
-        if !entry.isDir, let size = entry.size {
-            parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    /// Compact age: now, 5m, 3h, 2d, 3w, 5mo, 2y.
-    private static func ago(_ date: Date) -> String {
-        let seconds = max(0, -date.timeIntervalSinceNow)
-        switch seconds {
-        case ..<60: return "now"
-        case ..<3600: return "\(Int(seconds / 60))m"
-        case ..<86_400: return "\(Int(seconds / 3600))h"
-        case ..<(86_400 * 14): return "\(Int(seconds / 86_400))d"
-        case ..<(86_400 * 60): return "\(Int(seconds / (86_400 * 7)))w"
-        case ..<(86_400 * 365): return "\(Int(seconds / (86_400 * 30)))mo"
-        default: return "\(Int(seconds / (86_400 * 365)))y"
-        }
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(shortcut.map { "\(action.label)  \($0)" } ?? action.label)
     }
 }
 
@@ -791,11 +432,7 @@ private struct PreviewChipButton: View {
     var body: some View {
         Button(action: chip.run) {
             HStack(spacing: 5) {
-                if let appPath = chip.appPath {
-                    Image(nsImage: RowIconCache.icon(forFile: appPath))
-                        .resizable()
-                        .frame(width: 14, height: 14)
-                } else if let symbol = chip.symbol {
+                if let symbol = chip.symbol {
                     Image(systemName: symbol)
                         .font(.system(size: 10.5, weight: .medium))
                 }
@@ -815,28 +452,6 @@ private struct PreviewChipButton: View {
     }
 }
 
-/// The eye button: card ↔ preview.
-private struct PreviewToggleButton: View {
-    let showingPreview: Bool
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: showingPreview ? "eye.slash" : "eye")
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-                .background(Color.primary.opacity(hovering ? 0.16 : 0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(showingPreview ? "Show details  ⌥P" : "Show preview  ⌥P")
-    }
-}
-
-/// Lays chips out left to right, wrapping onto new lines.
 struct ChipFlow: Layout {
     var spacing: CGFloat = 6
 
@@ -875,55 +490,5 @@ struct ChipFlow: Layout {
             x += size.width + spacing
             lineHeight = max(lineHeight, size.height)
         }
-    }
-}
-
-extension SpotlightPreviewView {
-    /// Draws the detail card for the file at `path` into a PNG, without a window, so the layout
-    /// can be checked from the command line: `Lumio --render-card <file.png> <path>`.
-    static func renderSample(path: String, to output: String, preview: Bool = false) -> Bool {
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { return false }
-        let isApp = path.hasSuffix(".app")
-        let kind: SpotlightKind = isApp ? .app : (isDir.boolValue ? .folder : .doc)
-        let name = FileManager.default.displayName(atPath: path).replacingOccurrences(of: ".app", with: "")
-        let item = SpotlightItem(id: "sample|" + path, name: name, kind: kind, target: path, iconPath: path)
-        let ext = (path as NSString).pathExtension.lowercased()
-        let parent = FileManager.default.displayName(atPath: (path as NSString).deletingLastPathComponent)
-        var chips = [PreviewChip(id: "kind", label: isApp ? "apps" : (isDir.boolValue ? "folder" : "file"), symbol: "doc") {}]
-        if !ext.isEmpty, !isApp { chips.append(PreviewChip(id: "ext", label: "." + ext, symbol: "square.on.square") {}) }
-        chips.append(PreviewChip(id: "parent", label: parent, symbol: "folder") {})
-        if !isApp, !isDir.boolValue, let app = NSWorkspace.shared.urlForApplication(toOpen: URL(fileURLWithPath: path)) {
-            chips.append(PreviewChip(
-                id: "app", label: FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: ""),
-                appPath: app.path
-            ) {})
-        }
-        let actions = [
-            PreviewAction(id: "open", label: "Open", symbol: "arrow.up.forward.app", shortcut: "⏎") {},
-            PreviewAction(id: "reveal", label: "Show in \(FileManagerApp.name)", short: "Show", symbol: "folder", shortcut: "⌘F") {},
-            PreviewAction(id: "search", label: "Search in Parent Folder", short: "Search", symbol: "magnifyingglass", shortcut: "⌘R") {},
-            PreviewAction(id: "terminal", label: "Open in Terminal", short: "Terminal", symbol: "terminal", shortcut: "⌘T") {},
-            PreviewAction(id: "openwith", label: "Open With…", symbol: "arrow.up.forward.square") {},
-            PreviewAction(id: "pin", label: "Pin to Home", symbol: "pin", shortcut: "⌘⇧P") {},
-        ]
-        let size = NSSize(width: 360, height: 392)
-        let view = NSHostingView(
-            rootView: SpotlightPreviewView(item: item, chips: chips, showsPreview: preview, actions: actions)
-                .frame(width: size.width, height: size.height)
-                .background(Color(white: 0.2))
-                .environment(\.colorScheme, .dark)
-        )
-        view.frame = NSRect(origin: .zero, size: size)
-        let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.contentView = view
-        view.layoutSubtreeIfNeeded()
-        // Let the first layout, the info load and the thumbnail land.
-        RunLoop.main.run(until: Date().addingTimeInterval(1.2))
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return false }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let data = bitmap.representation(using: .png, properties: [:]) else { return false }
-        return (try? data.write(to: URL(fileURLWithPath: output))) != nil
     }
 }

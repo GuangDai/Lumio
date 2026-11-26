@@ -4,7 +4,7 @@ import Foundation
 import ServiceManagement
 
 /// App settings kept in the config file (`~/.lumio/config`) and edited in Settings:
-/// file indexing, logging, shortcuts, and launch at login.
+/// folder indexing, logging, shortcuts, and launch at login.
 final class ThemeStore: ObservableObject {
     // Shared so AppDelegate (which hosts ContentView in an AppKit window), the
     // Settings window and the launcher use the same store.
@@ -20,8 +20,8 @@ final class ThemeStore: ObservableObject {
     }
 
     @Published private(set) var excludedFolderPaths: [String] = []
-    @Published private(set) var fileScanRoots: [String] = []
-    @Published private(set) var extraFileScanRoots: [String] = []
+    @Published private(set) var folderScanRoots: [String] = []
+    @Published private(set) var extraFolderScanRoots: [String] = []
 
     enum AddExtraScanRootError: Error {
         case notDirectory
@@ -77,16 +77,16 @@ final class ThemeStore: ObservableObject {
 
         var warnings: [String] = []
         if let raw = try? String(contentsOf: configPath, encoding: .utf8) {
-            let values = ConfigFileLines.keyValues(raw)
-            if let value = values["file_scan_depth"], let parsed = Int(value),
-               !(AppConstants.FileScan.minDepth...AppConstants.FileScan.maxDepth).contains(parsed)
+            let values = Self.configValues(raw)
+            if let value = values["folder_scan_depth"], let parsed = Int(value),
+               !(AppConstants.FolderScan.minDepth...AppConstants.FolderScan.maxDepth).contains(parsed)
             {
-                warnings.append("file_scan_depth=\(value) invalid (must be \(AppConstants.FileScan.minDepth)-\(AppConstants.FileScan.maxDepth))")
+                warnings.append("folder_scan_depth=\(value) invalid (must be \(AppConstants.FolderScan.minDepth)-\(AppConstants.FolderScan.maxDepth))")
             }
-            if let value = values["file_scan_limit"], let parsed = Int(value),
-               !(AppConstants.FileScan.minLimit...AppConstants.FileScan.maxLimit).contains(parsed)
+            if let value = values["folder_scan_limit"], let parsed = Int(value),
+               !(AppConstants.FolderScan.minLimit...AppConstants.FolderScan.maxLimit).contains(parsed)
             {
-                warnings.append("file_scan_limit=\(value) invalid (must be \(AppConstants.FileScan.minLimit)-\(AppConstants.FileScan.maxLimit))")
+                warnings.append("folder_scan_limit=\(value) invalid (must be \(AppConstants.FolderScan.minLimit)-\(AppConstants.FolderScan.maxLimit))")
             }
         }
 
@@ -105,14 +105,13 @@ final class ThemeStore: ObservableObject {
             return false
         }
         var lines = ConfigFileLines.parse(raw)
-        ConfigFileLines.upsert(&lines, key: "file_scan_depth", value: String(settings.fileScanDepth))
-        ConfigFileLines.upsert(&lines, key: "file_scan_limit", value: String(settings.fileScanLimit))
+        ConfigFileLines.upsert(&lines, key: "folder_scan_depth", value: String(settings.folderScanDepth))
+        ConfigFileLines.upsert(&lines, key: "folder_scan_limit", value: String(settings.folderScanLimit))
         ConfigFileLines.upsert(&lines, key: "lazy_indexing_enabled", value: settings.lazyIndexingEnabled ? "true" : "false")
-        ConfigFileLines.upsert(&lines, key: "file_exclude_paths", value: ConfigFileLines.renderList(excludedFolderPaths))
-        ConfigFileLines.upsert(&lines, key: "file_scan_extra_roots", value: ConfigFileLines.renderList(extraFileScanRoots))
+        ConfigFileLines.upsert(&lines, key: "folder_exclude_paths", value: ConfigFileLines.renderList(excludedFolderPaths))
+        ConfigFileLines.upsert(&lines, key: "folder_scan_extra_roots", value: ConfigFileLines.renderList(extraFolderScanRoots))
         ConfigFileLines.upsert(&lines, key: "backend_log_level", value: settings.backendLogLevel.rawValue)
         ConfigFileLines.upsert(&lines, key: "launcher_corner_radius", value: String(Int(settings.launcherCornerRadius.rounded())))
-        ConfigFileLines.upsert(&lines, key: "liquid_glass_enabled", value: settings.liquidGlassEnabled ? "true" : "false")
         ConfigFileLines.upsert(&lines, key: "launch_at_login", value: settings.launchAtLogin ? "true" : "false")
         ConfigFileLines.upsert(&lines, key: HiddenTabs.configKey, value: HiddenTabs.render(settings.hiddenTabs))
         ConfigFileLines.upsert(&lines, key: QuickBubbles.configKey, value: QuickBubbles.render(settings.quickBubbles))
@@ -168,8 +167,8 @@ final class ThemeStore: ObservableObject {
     }
 
     @discardableResult
-    func addExtraFileScanRoot(url: URL) -> AddExtraScanRootError? {
-        let normalizedPath = normalizeFileScanRootPath(url.path)
+    func addExtraFolderScanRoot(url: URL) -> AddExtraScanRootError? {
+        let normalizedPath = normalizeFolderScanRootPath(url.path)
         guard !normalizedPath.isEmpty else {
             return .notDirectory
         }
@@ -183,22 +182,23 @@ final class ThemeStore: ObservableObject {
             return .riskySystemRoot
         }
 
-        if fileScanRoots.contains(where: { pathContains($0, normalizedPath) || pathContains(normalizedPath, $0) }) {
+        // A nested explicit root can reach farther than its parent scan's depth limit.
+        if folderScanRoots.contains(where: { pathContains(normalizedPath, $0) }) {
             return .alreadyIncluded
         }
 
-        if let overlap = extraFileScanRoots.first(where: { pathContains($0, normalizedPath) || pathContains(normalizedPath, $0) }) {
+        if let overlap = extraFolderScanRoots.first(where: { pathContains($0, normalizedPath) || pathContains(normalizedPath, $0) }) {
             return .overlapsExistingRoot(overlap)
         }
 
-        extraFileScanRoots.append(normalizedPath)
-        extraFileScanRoots.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        extraFolderScanRoots.append(normalizedPath)
+        extraFolderScanRoots.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         return nil
     }
 
-    func removeExtraFileScanRoot(_ path: String) {
-        let normalizedPath = normalizeFileScanRootPath(path)
-        extraFileScanRoots.removeAll { $0 == normalizedPath }
+    func removeExtraFolderScanRoot(_ path: String) {
+        let normalizedPath = normalizeFolderScanRootPath(path)
+        extraFolderScanRoots.removeAll { $0 == normalizedPath }
     }
 
     private func save() {
@@ -214,32 +214,30 @@ final class ThemeStore: ObservableObject {
         }
 
         excludedFolderPaths = []
-        fileScanRoots = defaultFileScanRoots()
-        extraFileScanRoots = []
+        folderScanRoots = defaultFolderScanRoots()
+        extraFolderScanRoots = []
 
-        for (key, value) in ConfigFileLines.keyValues(raw) {
+        for (key, value) in Self.configValues(raw) {
             switch key {
-            case "file_scan_depth":
-                if let parsed = parsePositiveInt(value) { settings.fileScanDepth = parsed }
-            case "file_scan_limit":
-                if let parsed = parsePositiveInt(value) { settings.fileScanLimit = parsed }
+            case "folder_scan_depth":
+                if let parsed = parsePositiveInt(value) { settings.folderScanDepth = parsed }
+            case "folder_scan_limit":
+                if let parsed = parsePositiveInt(value) { settings.folderScanLimit = parsed }
             case "lazy_indexing_enabled":
                 if let parsed = parseBool(value) { settings.lazyIndexingEnabled = parsed }
-            case "file_exclude_paths":
+            case "folder_exclude_paths":
                 excludedFolderPaths = parseExcludedFolderPaths(value)
-            case "file_scan_roots":
-                let parsed = parseFileScanRootPaths(value)
-                if !parsed.isEmpty { fileScanRoots = parsed }
-            case "file_scan_extra_roots":
-                extraFileScanRoots = parseFileScanRootPaths(value)
+            case "folder_scan_roots":
+                let parsed = parseFolderScanRootPaths(value)
+                if !parsed.isEmpty { folderScanRoots = parsed }
+            case "folder_scan_extra_roots":
+                extraFolderScanRoots = parseFolderScanRootPaths(value)
             case "backend_log_level":
                 if let parsed = parseBackendLogLevel(value) { settings.backendLogLevel = parsed }
             case "launcher_corner_radius":
                 if let parsed = Double(value.trimmingCharacters(in: .whitespaces)) {
                     settings.launcherCornerRadius = min(max(parsed, ThemeSettings.cornerRadiusRange.lowerBound), ThemeSettings.cornerRadiusRange.upperBound)
                 }
-            case "liquid_glass_enabled":
-                if let parsed = parseBool(value) { settings.liquidGlassEnabled = parsed }
             case "launch_at_login":
                 if let parsed = parseBool(value) { settings.launchAtLogin = parsed }
             case HiddenTabs.configKey:
@@ -256,6 +254,16 @@ final class ThemeStore: ObservableObject {
                 }
             }
         }
+    }
+
+    private static func configValues(_ raw: String) -> [String: String] {
+        var values = ConfigFileLines.keyValues(raw)
+        let folderKeys = ["folder_scan_roots", "folder_scan_extra_roots", "folder_scan_depth",
+                          "folder_scan_limit", "folder_exclude_paths"]
+        for key in folderKeys where values[key] == nil {
+            values[key] = values["file_" + String(key.dropFirst("folder_".count))]
+        }
+        return values
     }
 
     private static func configPath() -> URL {
@@ -330,11 +338,11 @@ final class ThemeStore: ObservableObject {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    private func parseFileScanRootPaths(_ value: String) -> [String] {
+    private func parseFolderScanRootPaths(_ value: String) -> [String] {
         var seen = Set<String>()
         var paths: [String] = []
         for token in ConfigFileLines.parseList(value) {
-            let normalized = normalizeFileScanRootPath(token)
+            let normalized = normalizeFolderScanRootPath(token)
             if normalized.isEmpty || seen.contains(normalized) {
                 continue
             }
@@ -344,7 +352,7 @@ final class ThemeStore: ObservableObject {
         return paths.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    private func normalizeFileScanRootPath(_ value: String) -> String {
+    private func normalizeFolderScanRootPath(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return ""
@@ -353,10 +361,10 @@ final class ThemeStore: ObservableObject {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    private func defaultFileScanRoots() -> [String] {
+    private func defaultFolderScanRoots() -> [String] {
         let home = NSHomeDirectory()
-        let defaults = ["Desktop", "Documents", "Downloads"]
-        return defaults.map { URL(fileURLWithPath: home).appendingPathComponent($0).standardizedFileURL.path }
+        let defaults = ["Desktop", "Documents", "Downloads", "Library"]
+        return defaults.map { URL(fileURLWithPath: home).appendingPathComponent($0).standardizedFileURL.path } + [home]
     }
 
     private func isRiskyRoot(_ path: String) -> Bool {
@@ -398,18 +406,11 @@ app_scan_roots=/Applications,/System/Applications,/System/Applications/Utilities
 app_scan_depth=3
 app_exclude_paths=
 app_exclude_names=
-file_scan_roots=Desktop,Documents,Downloads
-file_scan_extra_roots=
-file_scan_depth=4
-file_scan_limit=8000
-file_exclude_paths=
-ignored_patterns_sample=
-# File ignore patterns. Gitignore-style path globs: *, **, ?, [abc].
-# Format: ignored_patterns_<group>=Pattern1|Pattern2|Pattern3
-# macOS/Linux usually use ~/... or /... ; on Windows, C:\\... is the safest documented form and ~ expands to your home dir.
-# ignored_patterns_browser=~/AppData/Local/BraveSoftware/**/*.log|~/AppData/Local/Google/Chrome/**/*.tmp
-# ignored_patterns_sqlite=~/Documents/git/project/**/*.db-wal|~/Documents/git/project/**/*.db-shm
-# ignored_patterns_temp=~/Downloads/*.tmp|~/Downloads/**/*.part
+folder_scan_roots=Desktop,Documents,Downloads,Library,~/
+folder_scan_extra_roots=
+folder_scan_depth=4
+folder_scan_limit=8000
+folder_exclude_paths=
 lazy_indexing_enabled=true
 backend_log_level=error
 launch_at_login=true
@@ -417,11 +418,9 @@ launch_at_login=true
 tab_hidden=
 # Shortcuts: hotkey_<action>=cmd+shift+v (modifiers: cmd, opt, ctrl, shift; empty = off).
 # Global actions: launcher, settings, process (Processes), and search tag shortcuts
-# In the launcher only: quicklook (Quick Look the selected row)
 hotkey_launcher=opt+space
 hotkey_settings=cmd+shift+space
-hotkey_quicklook=cmd+y
-skip_dir_names=node_modules,target,build,dist,library,applications,old firefox data,deriveddata,pods,vendor,out,coverage,tmp,cache,venv
+skip_dir_names=node_modules,target,build,dist,applications,old firefox data,deriveddata,pods,vendor,out,coverage,tmp,cache,venv
 
 # Search aliases (apps + System Settings). Format: alias_<keyword>=Term1|Term2|Term3
 alias_note=Notion|Obsidian|Notes|Apple Notes|Bear|Logseq
@@ -429,7 +428,7 @@ alias_code=Visual Studio Code|VSCode|Cursor|Windsurf|IntelliJ IDEA|PyCharm|WebSt
 alias_term=Terminal|iTerm|iTerm2|Ghostty|WezTerm|Alacritty|Kitty|Warp
 alias_chat=Slack|Discord|Telegram|Messages
 alias_music=Spotify|Apple Music|Music
-alias_brow=Safari|Arc|Google Chrome|Chrome|Firefox|Brave
+alias_brow=Arc|Google Chrome|Chrome|Firefox|Brave
 """
 
     private static func loadThemeSettings(from data: Data?) -> ThemeSettings {

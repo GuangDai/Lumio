@@ -1,7 +1,8 @@
 use crate::runtime_config::{log_error, log_info};
 use lumio_engine::config::RuntimeConfig;
+use lumio_engine::index::should_exclude_folder;
 use lumio_engine::{BootstrapScope, QueryEngine};
-use notify::event::{ModifyKind, RenameMode};
+use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::env;
@@ -23,14 +24,13 @@ static INDEX_WATCHER_BOOTSTRAP_STARTED: OnceLock<()> = OnceLock::new();
 static INDEX_REFRESH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static INDEX_CHANGE_VERSION: AtomicU64 = AtomicU64::new(0);
 static INDEX_CLEARED_VERSION: AtomicU64 = AtomicU64::new(0);
-/// Which sources changed since the last refresh (`SCOPE_*` bits). The watcher
-/// adds the bits of what it saw; a refresh takes them, so a build churning a
-/// file root re-walks files only, not every app root too.
+/// Which discovery sources changed since the last refresh (`SCOPE_*` bits).
+/// Watcher events refresh just apps or folders. Config changes refresh all sources.
 static PENDING_SCOPE: AtomicU8 = AtomicU8::new(0);
 const SCOPE_APPS: u8 = 1;
-const SCOPE_FILES: u8 = 2;
+const SCOPE_FOLDERS: u8 = 2;
 const SCOPE_SETTINGS: u8 = 4;
-const SCOPE_ALL: u8 = SCOPE_APPS | SCOPE_FILES | SCOPE_SETTINGS;
+const SCOPE_ALL: u8 = SCOPE_APPS | SCOPE_FOLDERS | SCOPE_SETTINGS;
 static INDEX_WATCHER_CONTROL: OnceLock<Mutex<Option<mpsc::Sender<WatcherMessage>>>> =
     OnceLock::new();
 
@@ -152,7 +152,7 @@ fn mark_index_dirty_scoped(bits: u8) {
 fn scope_from_bits(bits: u8) -> BootstrapScope {
     BootstrapScope {
         apps: bits & SCOPE_APPS != 0,
-        files: bits & SCOPE_FILES != 0,
+        folders: bits & SCOPE_FOLDERS != 0,
         settings: bits & SCOPE_SETTINGS != 0,
     }
 }
@@ -210,16 +210,15 @@ pub(crate) fn restart_index_watchers() {
     }
 
     let filter = WatchFilter::from_config(&config);
-    let mut roots = config.app_scan_roots;
-    roots.extend(config.file_scan_roots);
-    roots.extend(config.file_scan_extra_roots);
-    roots.sort();
-    roots.dedup();
-
-    let active_roots: Vec<String> = roots
-        .into_iter()
-        .filter(|root| !root.trim().is_empty() && Path::new(root).exists())
+    let mut active_roots: Vec<PathBuf> = filter
+        .app_roots
+        .iter()
+        .chain(&filter.folder_roots)
+        .filter(|root| root.is_dir())
+        .cloned()
         .collect();
+    active_roots.sort();
+    active_roots.dedup();
 
     if active_roots.is_empty() {
         log_info("index watcher: no valid roots to monitor");
@@ -251,13 +250,10 @@ pub(crate) fn restart_index_watchers() {
 
         let mut watched_count = 0usize;
         for root in &active_roots {
-            if watcher
-                .watch(Path::new(root), RecursiveMode::Recursive)
-                .is_ok()
-            {
+            if watcher.watch(root, RecursiveMode::Recursive).is_ok() {
                 watched_count += 1;
             } else {
-                log_error(&format!("index watcher failed root={root}"));
+                log_error(&format!("index watcher failed root={}", root.display()));
             }
         }
 
@@ -274,7 +270,20 @@ pub(crate) fn restart_index_watchers() {
                 Ok(WatcherMessage::Stop) => break,
                 Ok(WatcherMessage::Event(Ok(event))) => {
                     if should_mark_dirty_from_event(&event) {
-                        mark_index_dirty_scoped(filter.scope_bits(&event.paths));
+                        let mut scope = 0;
+                        if event.paths.iter().any(|path| filter.touches_apps(path)) {
+                            scope |= SCOPE_APPS;
+                        }
+                        if event.paths.iter().any(|path| {
+                            filter.touches_folders(path)
+                                && is_directory_event(event.kind, path, |path| {
+                                    with_engine(|engine| engine.contains_indexed_folder(path))
+                                })
+                                && !should_exclude_folder(path, &config)
+                        }) {
+                            scope |= SCOPE_FOLDERS;
+                        }
+                        mark_index_dirty_scoped(scope);
                     }
                 }
                 Ok(WatcherMessage::Event(Err(err))) => {
@@ -475,56 +484,35 @@ fn stop_index_watchers() {
     }
 }
 
-/// Decides which index sources a filesystem event touches, with the same rules
-/// the walkers use, so churn the index never sees (`target/`, `node_modules/`,
-/// dot-dirs, files inside a `.app`, paths deeper than the scan depth) doesn't
-/// mark the index dirty and re-walk it on the next launcher open.
-pub(crate) struct WatchFilter {
+/// Limits refreshes to the configured roots and scan depths.
+struct WatchFilter {
     app_roots: Vec<PathBuf>,
     app_depth: usize,
-    file_roots: Vec<PathBuf>,
-    file_depth: usize,
-    skip_dir_names: Vec<String>,
+    folder_roots: Vec<PathBuf>,
+    folder_depth: usize,
 }
 
 impl WatchFilter {
     fn from_config(config: &RuntimeConfig) -> Self {
-        let roots = |list: &[String]| -> Vec<PathBuf> {
-            list.iter()
-                .map(|root| root.trim())
-                .filter(|root| !root.is_empty())
-                .map(PathBuf::from)
-                .collect()
+        let clean_root = |root: &String| {
+            let root = root.trim();
+            (!root.is_empty()).then(|| PathBuf::from(root))
         };
-        let mut file_roots = roots(&config.file_scan_roots);
-        file_roots.extend(roots(&config.file_scan_extra_roots));
         Self {
-            app_roots: roots(&config.app_scan_roots),
-            app_depth: config.app_scan_depth,
-            file_roots,
-            file_depth: config.file_scan_depth,
-            skip_dir_names: config
-                .skip_dir_names
+            app_roots: config
+                .app_scan_roots
                 .iter()
-                .map(|name| name.trim().to_lowercase())
-                .filter(|name| !name.is_empty())
+                .filter_map(clean_root)
                 .collect(),
+            app_depth: config.app_scan_depth,
+            folder_roots: config
+                .folder_scan_roots
+                .iter()
+                .chain(&config.folder_scan_extra_roots)
+                .filter_map(clean_root)
+                .collect(),
+            folder_depth: config.folder_scan_depth,
         }
-    }
-
-    /// `SCOPE_*` bits for the sources any of `paths` belongs to; 0 when none
-    /// of them could change what the index holds.
-    fn scope_bits(&self, paths: &[PathBuf]) -> u8 {
-        let mut bits = 0;
-        for path in paths {
-            if bits & SCOPE_APPS == 0 && self.touches_apps(path) {
-                bits |= SCOPE_APPS;
-            }
-            if bits & SCOPE_FILES == 0 && self.touches_files(path) {
-                bits |= SCOPE_FILES;
-            }
-        }
-        bits
     }
 
     fn touches_apps(&self, path: &Path) -> bool {
@@ -544,26 +532,26 @@ impl WatchFilter {
         })
     }
 
-    fn touches_files(&self, path: &Path) -> bool {
-        self.file_roots.iter().any(|root| {
-            let Ok(rest) = path.strip_prefix(root) else {
-                return false;
-            };
-            let mut depth = 0;
-            for name in rest.iter() {
-                depth += 1;
-                let Some(name) = name.to_str() else {
-                    return false;
-                };
-                if name.starts_with('.')
-                    || name.ends_with(".app")
-                    || self.skip_dir_names.contains(&name.to_lowercase())
-                {
-                    return false;
-                }
-            }
-            depth >= 1 && depth <= self.file_depth
+    fn touches_folders(&self, path: &Path) -> bool {
+        self.folder_roots.iter().any(|root| {
+            path.strip_prefix(root)
+                .is_ok_and(|part| part.components().count() <= self.folder_depth)
         })
+    }
+}
+
+fn is_directory_event(
+    kind: EventKind,
+    path: &Path,
+    was_indexed_folder: impl FnOnce(&Path) -> bool,
+) -> bool {
+    match kind {
+        EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
+        EventKind::Create(CreateKind::File) | EventKind::Remove(RemoveKind::File) => false,
+        EventKind::Create(_) => path.is_dir(),
+        // Some backends report untyped renames and no longer have metadata for
+        // the old path. The index distinguishes that folder from a moved file.
+        _ => path.is_dir() || was_indexed_folder(path),
     }
 }
 
@@ -681,62 +669,47 @@ mod tests {
         super::WatchFilter {
             app_roots: vec!["/Applications".into()],
             app_depth: 3,
-            file_roots: vec!["/Users/me/Code".into()],
-            file_depth: 4,
-            skip_dir_names: vec!["target".into(), "node_modules".into()],
+            folder_roots: vec!["/Users/me".into()],
+            folder_depth: 4,
         }
     }
 
-    fn bits(filter: &super::WatchFilter, path: &str) -> u8 {
-        filter.scope_bits(&[std::path::PathBuf::from(path)])
+    #[test]
+    fn watch_filter_ignores_paths_outside_apps_and_inside_bundles() {
+        let filter = watch_filter();
+        assert!(!filter.touches_apps(std::path::Path::new("/Users/me/Documents/notes.md")));
+        assert!(!filter.touches_apps(std::path::Path::new(
+            "/Applications/Safari.app/Contents/Info.plist"
+        )));
+        assert!(!filter.touches_apps(std::path::Path::new("/Applications/a/b/c/Foo.app")));
     }
 
     #[test]
-    fn watch_filter_ignores_churn_the_walkers_skip() {
+    fn watch_filter_accepts_app_bundles_and_their_parent_folders() {
         let filter = watch_filter();
-        // Build output, dependencies, dot-dirs: the file walker never enters them.
-        assert_eq!(bits(&filter, "/Users/me/Code/lumio/target/debug/foo.o"), 0);
-        assert_eq!(
-            bits(&filter, "/Users/me/Code/web/node_modules/x/index.js"),
-            0
-        );
-        assert_eq!(bits(&filter, "/Users/me/Code/lumio/.git/index"), 0);
-        assert_eq!(
-            bits(&filter, "/Users/me/Code/Target/x"),
-            0,
-            "skip names ignore case"
-        );
-        // Deeper than file_scan_depth.
-        assert_eq!(bits(&filter, "/Users/me/Code/a/b/c/d/e.txt"), 0);
-        // Outside every root.
-        assert_eq!(bits(&filter, "/tmp/x"), 0);
-        // An app updating files inside its own bundle.
-        assert_eq!(
-            bits(&filter, "/Applications/Safari.app/Contents/Info.plist"),
-            0
-        );
+        assert!(filter.touches_apps(std::path::Path::new("/Applications/Foo.app")));
+        assert!(filter.touches_apps(std::path::Path::new("/Applications/Utilities/Foo.app")));
+        assert!(filter.touches_apps(std::path::Path::new("/Applications/Games")));
     }
 
     #[test]
-    fn watch_filter_scopes_real_changes_to_their_source() {
+    fn folder_watch_includes_hidden_folders_and_ignores_plain_file_events() {
         let filter = watch_filter();
-        assert_eq!(
-            bits(&filter, "/Users/me/Code/a/b/c/notes.md"),
-            super::SCOPE_FILES
-        );
-        assert_eq!(bits(&filter, "/Applications/Foo.app"), super::SCOPE_APPS);
-        assert_eq!(
-            bits(&filter, "/Applications/Utilities/Foo.app"),
-            super::SCOPE_APPS
-        );
-        assert_eq!(bits(&filter, "/Applications/Games"), super::SCOPE_APPS);
-        // Beyond app_scan_depth.
-        assert_eq!(bits(&filter, "/Applications/a/b/c/Foo.app"), 0);
-        let both = filter.scope_bits(&[
-            "/Applications/Foo.app".into(),
-            "/Users/me/Code/readme.md".into(),
-        ]);
-        assert_eq!(both, super::SCOPE_APPS | super::SCOPE_FILES);
+        let hidden = std::path::Path::new("/Users/me/.config");
+        let moved = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        assert!(filter.touches_folders(hidden));
+        assert!(super::is_directory_event(
+            EventKind::Create(CreateKind::Folder),
+            hidden,
+            |_| false
+        ));
+        assert!(super::is_directory_event(moved, hidden, |_| true));
+        assert!(!super::is_directory_event(
+            EventKind::Create(CreateKind::File),
+            hidden,
+            |_| false
+        ));
+        assert!(!filter.touches_folders(std::path::Path::new("/Users/me/a/b/c/d/e")));
     }
 
     #[test]

@@ -2,16 +2,11 @@
 //  BrowserHistory.swift
 //  lumio-app
 //
-//  Recently visited pages of one site, for search tags: `drive` + Tab lists the Google Drive
-//  docs you opened lately, `yt` + Tab your recent videos. Read-only, local, nothing leaves
-//  the Mac.
+//  Locally visited pages, matched by title and address across browser profiles.
 //
 //  Reads the history database of Chromium browsers (Chrome, Arc, Brave, Edge, Vivaldi,
 //  Chromium), every profile. The browser keeps the file locked while running, so it is
 //  opened `immutable` (no locks taken, nothing written).
-//
-//  Safari's history is read too once Lumio has Full Disk Access (System Settings ▸ Privacy &
-//  Security ▸ Full Disk Access). Without it macOS refuses the file and Safari is skipped.
 //
 
 import AppKit
@@ -48,12 +43,9 @@ nonisolated enum BrowserHistory {
         "Chromium": "org.chromium.Chromium",
     ]
 
-    /// App path of the browser that owns `file` (a profile's History / Bookmarks), or Safari's.
+    /// App path of the Chromium browser that owns the profile's data file.
     static func appPath(forDataFile file: URL) -> String? {
         let path = file.path
-        if path.contains("/Library/Safari/") {
-            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari")?.path
-        }
         for (dir, id) in bundleIDs where path.contains("/Application Support/\(dir)/") {
             return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)?.path
         }
@@ -92,7 +84,7 @@ nonisolated enum BrowserHistory {
                 lines.append("\(dir): folder readable, profiles: \(profiles.joined(separator: ", "))")
                 for profile in profiles {
                     let base = root.appendingPathComponent(profile)
-                    for file in ["History", "Bookmarks", "Web Data"] {
+                    for file in ["History", "Bookmarks"] {
                         let url = base.appendingPathComponent(file)
                         guard fm.fileExists(atPath: url.path) else {
                             lines.append("  \(profile)/\(file): not there")
@@ -113,16 +105,6 @@ nonisolated enum BrowserHistory {
                 }
             } catch {
                 lines.append("\(dir): BLOCKED (\((error as NSError).localizedDescription))")
-            }
-        }
-        for file in ["History.db", "Bookmarks.plist"] {
-            let url = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Safari/" + file)
-            let handle = fopen(url.path, "r")
-            if let handle {
-                fclose(handle)
-                lines.append("Safari/\(file): readable")
-            } else {
-                lines.append("Safari/\(file): BLOCKED (\(String(cString: strerror(errno)))) - needs Full Disk Access")
             }
         }
         return lines
@@ -156,7 +138,6 @@ nonisolated enum BrowserHistory {
         for db in databases() {
             pages += queryChromium(db, likeURL: "%", text: text, limit: 60)
         }
-        pages += querySafari(safariDatabase, likeURL: "%", text: text, limit: 60)
         let needle = text.lowercased()
         var seen = Set<String>()
         return pages
@@ -174,7 +155,7 @@ nonisolated enum BrowserHistory {
             .map { $0 }
     }
 
-    /// Search-engine result pages ("cats - Google Search"): the web row already covers them.
+    /// Search engine results are omitted from the unscoped history results.
     private static func isSearchPage(_ url: String) -> Bool {
         let lower = url.lowercased()
         return lower.contains("google.") && lower.contains("/search?")
@@ -190,15 +171,13 @@ nonisolated enum BrowserHistory {
     /// Pages of `tag`'s site, newest first, one per title. `text` narrows by title / address.
     static func recent(for tag: SearchTag, matching text: String, limit: Int) -> [HistoryPage] {
         guard let domain = tag.domain else { return [] }
-        let host = domain.split(separator: "/").first.map(String.init) ?? domain
         var pages: [HistoryPage] = []
         for db in databases() {
-            pages += queryChromium(db, likeURL: "%\(host)%", text: text, limit: 300)
+            pages += queryChromium(db, likeURL: "%\(domain)%", text: text, limit: 300)
         }
-        pages += querySafari(safariDatabase, likeURL: "%\(host)%", text: text, limit: 300)
         var seen = Set<String>()
         return pages
-            .filter { tag.matches(url: $0.url) && !isNoise($0, tag: tag) }
+            .filter { tag.matches(url: $0.url) && !isNoise($0) }
             .sorted { $0.lastVisit > $1.lastVisit }
             .filter { seen.insert(dedupeKey($0)).inserted }
             .prefix(limit)
@@ -210,53 +189,21 @@ nonisolated enum BrowserHistory {
     /// Chromium stores times as microseconds since 1601-01-01.
     private static let chromiumEpochOffset: Double = 11_644_473_600
 
-    static var safariDatabase: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Safari/History.db")
-    }
-
-    static func queryChromium(_ db: URL, likeURL: String, text: String, limit: Int) -> [HistoryPage] {
+    private static func queryChromium(_ db: URL, likeURL: String, text: String, limit: Int) -> [HistoryPage] {
         let words = text.split(separator: " ").map { "%\($0)%" }
         var sql = """
         SELECT url, title, last_visit_time, visit_count FROM urls
-        WHERE hidden = 0 AND url LIKE ?1
+        WHERE hidden = 0 AND url LIKE ?1 AND (url LIKE 'http://%' OR url LIKE 'https://%')
         """
         for index in words.indices {
             sql += " AND (title LIKE ?\(index + 2) OR url LIKE ?\(index + 2))"
         }
         sql += " ORDER BY last_visit_time DESC LIMIT \(limit)"
+
         // immutable=1: read without taking locks (Chrome holds the file in exclusive mode).
-        return run(sql, on: db, immutable: true, likeURL: likeURL, words: words) { micros in
-            Date(timeIntervalSince1970: micros / 1_000_000 - chromiumEpochOffset)
-        }
-    }
-
-    /// Safari: seconds since 2001-01-01, title per visit. Opened normally (read-only), not
-    /// immutable: Safari writes through a WAL, and immutable would miss today's visits.
-    static func querySafari(_ db: URL, likeURL: String, text: String, limit: Int) -> [HistoryPage] {
-        guard FileManager.default.isReadableFile(atPath: db.path) else { return [] }
-        let words = text.split(separator: " ").map { "%\($0)%" }
-        var sql = """
-        SELECT i.url, v.title, MAX(v.visit_time) AS last, i.visit_count
-        FROM history_items i JOIN history_visits v ON v.history_item = i.id
-        WHERE i.url LIKE ?1
-        """
-        for index in words.indices {
-            sql += " AND (v.title LIKE ?\(index + 2) OR i.url LIKE ?\(index + 2))"
-        }
-        sql += " GROUP BY i.id ORDER BY last DESC LIMIT \(limit)"
-        return run(sql, on: db, immutable: false, likeURL: likeURL, words: words) { seconds in
-            Date(timeIntervalSinceReferenceDate: seconds)
-        }
-    }
-
-    /// Runs a `url, title, time, visits` query. `?1` is the address pattern, `?2…` the words.
-    private static func run(
-        _ sql: String, on db: URL, immutable: Bool, likeURL: String, words: [String],
-        date: (Double) -> Date
-    ) -> [HistoryPage] {
         var handle: OpaquePointer?
         let path = db.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? db.path
-        let uri = "file:\(path)" + (immutable ? "?immutable=1" : "?mode=ro")
+        let uri = "file:\(path)?immutable=1"
         guard sqlite3_open_v2(uri, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
             sqlite3_close(handle)
             return []
@@ -279,12 +226,14 @@ nonisolated enum BrowserHistory {
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let urlC = sqlite3_column_text(statement, 0) else { continue }
             let url = String(cString: urlC)
+            guard BrowserOpening.webAddress(url) != nil else { continue }
             let title = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
-            let time = sqlite3_column_double(statement, 2)
+            let micros = sqlite3_column_double(statement, 2)
+            let time = Date(timeIntervalSince1970: micros / 1_000_000 - chromiumEpochOffset)
             let visits = Int(sqlite3_column_int64(statement, 3))
             pages.append(HistoryPage(
                 url: url, title: title.isEmpty ? url : title,
-                lastVisit: date(time), visitCount: visits, appPath: app
+                lastVisit: time, visitCount: visits, appPath: app
             ))
         }
         return pages
@@ -293,10 +242,9 @@ nonisolated enum BrowserHistory {
     // MARK: - Cleanup
 
     /// Sign-in pages, redirects and bare home pages are not worth suggesting.
-    private static func isNoise(_ page: HistoryPage, tag: SearchTag) -> Bool {
+    private static func isNoise(_ page: HistoryPage) -> Bool {
         if isLoginPage(page.url) { return true }
         guard let parts = URLComponents(string: page.url) else { return true }
-        // The site's own front page ("https://www.youtube.com/") adds nothing to the search row.
         return (parts.path.isEmpty || parts.path == "/") && (parts.query ?? "").isEmpty
             && (parts.fragment ?? "").isEmpty
     }

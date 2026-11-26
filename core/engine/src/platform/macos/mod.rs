@@ -24,7 +24,8 @@ pub(crate) const REQUIRED_APP_SCAN_ROOTS: &[&str] = &[
     "/System/Library/CoreServices/Finder.app/Contents/Applications",
 ];
 
-pub(crate) const FILE_SCAN_ROOT_SUFFIXES: &[&str] = &["Desktop", "Documents", "Downloads"];
+pub(crate) const FOLDER_SCAN_ROOT_SUFFIXES: &[&str] =
+    &["", "Downloads", "Documents", "Desktop", "Library"];
 
 pub(crate) const SETTINGS_URL_SCHEME_PREFIX: &str = "x-apple.systempreferences:";
 pub(crate) const SETTINGS_SUBTITLE_PREFIX: &str = "System Settings ";
@@ -41,7 +42,7 @@ const MAX_BUNDLE_READ_THREADS: usize = 4;
 /// Below this many bundles per thread, spawning costs more than it saves.
 const MIN_BUNDLES_PER_READ_THREAD: usize = 8;
 
-pub(crate) use apps::discover_installed_apps;
+pub(crate) use apps::{discover_installed_apps, is_excluded_browser_app};
 pub(crate) use settings_catalog::SETTINGS_CATALOG;
 
 /// Settings panes ship as `.appex` bundles here on macOS 13+. On macOS 12 and
@@ -65,19 +66,42 @@ pub(crate) fn additional_app_scan_roots() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Bundle names localized for the user's preferred languages, one entry per
-/// input path and in the same order. `None` means the bundle has no usable
-/// name and the caller should keep whatever it already had.
-pub(crate) fn read_localized_display_names(
+struct AppBundleMetadata {
+    is_safari: bool,
+    localized_name: Option<String>,
+}
+
+/// Bundle identity and optional localized names, in input path order.
+fn read_app_bundle_metadata(
     paths: &[String],
-    strip_suffix: &str,
-) -> Vec<Option<String>> {
-    if !localized_names_available() {
-        return vec![None; paths.len()];
-    }
+    localized_names: bool,
+) -> Vec<Option<AppBundleMetadata>> {
+    let localize = localized_names && localized_names_available();
     read_bundles(paths, |bundle, languages, _| {
-        read_bundle_name_for_languages(bundle, strip_suffix, languages)
+        let is_safari = is_safari_bundle(bundle);
+        let localized_name = if localize && !is_safari {
+            read_bundle_name_for_languages(bundle, APP_BUNDLE_EXTENSION, languages)
+        } else {
+            None
+        };
+        Some(AppBundleMetadata {
+            is_safari,
+            localized_name,
+        })
     })
+}
+
+fn is_safari_bundle(bundle: &NSBundle) -> bool {
+    let Some(identifier) = bundle.bundleIdentifier() else {
+        return false;
+    };
+    let identifier = identifier.to_string().to_ascii_lowercase();
+    matches!(
+        identifier.as_str(),
+        "com.apple.safari"
+            | "com.apple.safaritechnologypreview"
+            | "com.apple.safariforwebkitdevelopment"
+    ) || identifier.starts_with("com.apple.safari.webapp.")
 }
 
 /// Loads each path as a bundle and applies `read` to it, spreading the work
@@ -247,7 +271,7 @@ mod tests {
     use super::{
         APP_BUNDLE_EXTENSION, MIN_BUNDLES_PER_READ_THREAD, SETTINGS_BUNDLE_EXTENSION,
         SettingsCatalogEntry, bundle_read_threads, load_bundle, localized_names_available,
-        localized_settings_titles_in, read_bundle_name_for_languages, read_localized_display_names,
+        localized_settings_titles_in, read_app_bundle_metadata, read_bundle_name_for_languages,
     };
     use objc2_foundation::{NSArray, NSString};
     use std::fs;
@@ -415,12 +439,14 @@ mod tests {
             paths.push(app.to_str().expect("UTF-8 test bundle path").to_string());
         }
 
-        let names = read_localized_display_names(&paths, APP_BUNDLE_EXTENSION);
+        let metadata = read_app_bundle_metadata(&paths, true);
 
-        assert_eq!(names.len(), paths.len());
-        for (index, name) in names.iter().enumerate() {
+        assert_eq!(metadata.len(), paths.len());
+        for (index, entry) in metadata.iter().enumerate() {
             assert_eq!(
-                name.as_deref(),
+                entry
+                    .as_ref()
+                    .and_then(|bundle| bundle.localized_name.as_deref()),
                 Some(format!("{LOCALIZED_FIXTURE_NAME}{index}").as_str()),
                 "bundle {index} came back out of order"
             );

@@ -56,9 +56,13 @@ nonisolated final class OpenWindows: @unchecked Sendable {
         lock.unlock()
 
         let own = ProcessInfo.processInfo.processIdentifier
-        let apps = NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular && $0.processIdentifier != own }
-            .map { (pid: $0.processIdentifier, name: $0.localizedName ?? "App", path: $0.bundleURL?.path) }
+        let apps = NSWorkspace.shared.runningApplications.compactMap { app -> (pid: pid_t, name: String, path: String?)? in
+            guard app.activationPolicy == .regular, app.processIdentifier != own,
+                  !BrowserOpening.isBlockedBundleID(app.bundleIdentifier),
+                  app.bundleURL.map(BrowserOpening.isBlockedApplication) != true
+            else { return nil }
+            return (app.processIdentifier, app.localizedName ?? "App", app.bundleURL?.path)
+        }
         queue.async { [self] in
             var found: [OpenWindow] = []
             var refs: [String: AXUIElement] = [:]

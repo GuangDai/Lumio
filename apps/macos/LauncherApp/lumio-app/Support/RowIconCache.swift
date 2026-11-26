@@ -9,7 +9,7 @@ import Foundation
 /// keypress.
 nonisolated enum RowIconCache {
     // NSCache is documented thread-safe; nonisolated(unsafe) satisfies Swift 6
-    // strict-concurrency without an actor wrapper, as in `HighlightedTextCache`.
+    // strict-concurrency without an actor wrapper.
     nonisolated(unsafe) private static let cache: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
         // A few screenfuls, so scrolling does not evict icons about to return. File icons
@@ -19,7 +19,7 @@ nonisolated enum RowIconCache {
         return c
     }()
 
-    /// Cached icons fit the result rows and folder listings. The preview header
+    /// Cached icons fit the result rows. The preview header
     /// asks NSWorkspace for a larger icon.
     static let iconPoints: CGFloat = 32
 

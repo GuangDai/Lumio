@@ -2,14 +2,7 @@
 //  FaviconStore.swift
 //  lumio-app
 //
-//  Real site icons for web rows, like the browser's address bar and Fluent Search: a YouTube
-//  row shows YouTube's icon, a Figma bookmark Figma's.
-//
-//  Icons come from the browsers' own icon store first (the `Favicons` database of each
-//  Chromium profile: local, read-only, nothing leaves the Mac). Only for the sites of search
-//  tags (youtube.com, google.com… public, not personal) a missing icon is fetched once from
-//  Google's icon service and kept on disk. A history page whose icon is unknown falls back to
-//  its browser's app icon.
+//  Site icons for browser results from the local Favicons database of each Chromium profile.
 //
 
 import AppKit
@@ -26,18 +19,14 @@ final class FaviconStore: ObservableObject {
     private var lightIcons: Set<String> = []
     private var missing: Set<String> = []
     private var loading: Set<String> = []
-    /// Hosts allowed a network fetch: search-tag sites only.
-    private var remoteHosts: Set<String>?
-
     /// The icon for `host` ("youtube.com"), nil while unknown or loading.
     func image(for host: String) -> NSImage? {
         let key = Self.normalize(host)
         if let image = images[key] { return image }
         guard !missing.contains(key), !loading.contains(key) else { return nil }
         loading.insert(key)
-        let allowRemote = remoteAllowed(key)
         Task.detached(priority: .utility) {
-            let data = await FaviconLoader.load(host: key, allowRemote: allowRemote)
+            let data = FaviconLoader.load(host: key)
             await MainActor.run {
                 self.loading.remove(key)
                 if let data, let image = NSImage(data: data) {
@@ -92,13 +81,6 @@ final class FaviconStore: ObservableObject {
         }
     }
 
-    private func remoteAllowed(_ host: String) -> Bool {
-        if remoteHosts == nil {
-            remoteHosts = Set(SearchTags.all.compactMap(\.faviconHost).map(Self.normalize))
-        }
-        return remoteHosts?.contains(host) ?? false
-    }
-
     nonisolated static func normalize(_ host: String) -> String {
         let lower = host.lowercased()
         return lower.hasPrefix("www.") ? String(lower.dropFirst(4)) : lower
@@ -118,14 +100,10 @@ nonisolated enum FaviconLoader {
         return base.appendingPathComponent("com.cavaldos.Lumio/favicons", isDirectory: true)
     }
 
-    static func load(host: String, allowRemote: Bool) async -> Data? {
+    static func load(host: String) -> Data? {
         let file = cacheDir.appendingPathComponent(host.replacingOccurrences(of: "/", with: "_") + ".png")
         if let data = try? Data(contentsOf: file), !data.isEmpty { return data }
-        if let data = fromBrowsers(host: host) {
-            save(data, to: file)
-            return data
-        }
-        guard allowRemote, let data = await fromNetwork(host: host) else { return nil }
+        guard let data = fromBrowsers(host: host) else { return nil }
         save(data, to: file)
         return data
     }
@@ -170,15 +148,4 @@ nonisolated enum FaviconLoader {
         return count > 0 ? Data(bytes: bytes, count: count) : nil
     }
 
-    private static func fromNetwork(host: String) async -> Data? {
-        var parts = URLComponents(string: "https://www.google.com/s2/favicons")!
-        parts.queryItems = [URLQueryItem(name: "domain", value: host), URLQueryItem(name: "sz", value: "64")]
-        guard let url = parts.url else { return nil }
-        var request = URLRequest(url: url, timeoutInterval: 4)
-        request.setValue("Lumio", forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200, data.count > 100
-        else { return nil }
-        return data
-    }
 }

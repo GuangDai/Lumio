@@ -57,22 +57,12 @@ enum AppConstants {
             static let help = "help"
         }
 
-
-
         // Query prefixes sent by the command-line modes.
         enum QueryPrefix {
             static let apps = "a\""
-            static let files = "f\""
             static let folders = "d\""
             // Find running processes, inspect CPU usage, and force quit.
             static let process = "ps\""
-        }
-
-
-
-        enum WebURL {
-            /// Max previously-opened URLs suggested for the current query.
-            static let recentLimit = 5
         }
 
         /// `ps"` process-finder constants. Logic lives in `LauncherProcessFeature`.
@@ -91,20 +81,6 @@ enum AppConstants {
             static let minPrefixMatchLength = 3
         }
 
-        /// Preferred tools: Cmd+E and Cmd+T act through the tools a user named
-        /// in their config. See `specs/preferred-tools.md`.
-        enum Tools {
-            static let editAction = "edit"
-            static let terminalAction = "terminal"
-            static let launchFailedBanner = "Could not start"
-            /// Long enough for the terminal to have made its new window, so
-            /// activating raises that one and not the window it already had.
-            static let activationSettleNanoseconds: UInt64 = 350_000_000
-            /// A terminal that was not running yet has to start first.
-            static let activationPollNanoseconds: UInt64 = 200_000_000
-            static let activationPollAttempts = 8
-        }
-
         enum QuickFolder {
             static let idPrefix = "quickfolder:"
             static let pinnedSubtitle = "Pinned home folder"
@@ -120,9 +96,7 @@ enum AppConstants {
                 // the user sees in Finder/Explorer pins it.
                 QuickFolderDefinition(title: "Movies", location: .home("Movies")),
                 QuickFolderDefinition(title: "Music", location: .home("Music")),
-                // /Applications is a system folder outside home - the folder indexer
-                // only walks Desktop/Documents/Downloads, so pin it here to make it
-                // reachable. .app bundles inside it stay app candidates, not folders.
+                // The Applications folder is outside the user's home directory.
                 QuickFolderDefinition(
                     title: "Applications",
                     location: .absolute("/Applications"),
@@ -195,7 +169,7 @@ enum AppConstants {
         static let labelWidth: CGFloat = 150
     }
 
-    enum FileScan {
+    enum FolderScan {
         static let minDepth = 1
         static let maxDepth = 12
         static let minLimit = 500

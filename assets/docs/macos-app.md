@@ -1,6 +1,6 @@
 # macOS app
 
-SwiftUI app in `apps/macos/LauncherApp/lumio-app`. Requires macOS 15+ and Xcode 26 (the Liquid Glass look needs its SDK).
+SwiftUI app in `apps/macos/LauncherApp/lumio-app`. Runs on Apple Silicon with macOS 15+. The build uses Xcode 26.
 
 ```text
 lumio-app/
@@ -11,7 +11,6 @@ lumio-app/
 │   ├── Settings/                           settings and update status
 │   └── Commands/                           `:kill` and other commands
 ├── Models/                                 LauncherResult and theme models
-├── Components/                             shared view pieces (blur)
 └── Support/
     ├── Launcher/                           engine bridge, hotkey, processes, trash, tools
     ├── UI/                                 motion

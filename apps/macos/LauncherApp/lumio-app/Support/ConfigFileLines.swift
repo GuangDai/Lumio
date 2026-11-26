@@ -106,7 +106,7 @@ enum ConfigFileLines {
         lines.removeAll { trim(stripComment($0)).hasPrefix(assignment) }
     }
 
-    /// Splits a list value (`app_exclude_names`, `file_exclude_paths`, ...) into
+    /// Splits a list value (`app_exclude_names`, `folder_exclude_paths`, ...) into
     /// its entries. A backslash escapes only a separator or another backslash;
     /// anywhere else it is data. Must stay in step with `parse_csv` in
     /// `core/engine/src/config.rs`, which reads back whatever we write.

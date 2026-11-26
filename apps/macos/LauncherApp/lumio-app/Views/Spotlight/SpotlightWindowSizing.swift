@@ -22,7 +22,7 @@ enum SpotlightWindowSizing {
     /// Room for the toast below the panel.
     static let toastRoom: CGFloat = 80
 
-    /// Width of the largest glass cluster: the normal bar, or the shrunk bar + 4 round buttons.
+    /// Width of the normal bar, or the shrunk bar with quick buttons.
     static var clusterMaxWidth: CGFloat {
         let quicks = CGFloat(Metric.quickCount) * Metric.quickSize
             + CGFloat(Metric.quickCount) * Metric.quickGap

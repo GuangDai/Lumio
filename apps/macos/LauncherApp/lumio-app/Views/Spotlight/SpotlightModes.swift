@@ -27,7 +27,7 @@ enum SpotlightMode: Equatable {
         typealias P = AppConstants.Launcher.QueryPrefix
         let table: [(String, SpotlightKind)] = [
             (P.process, .process),
-            (P.apps, .app), (P.folders, .folder), (P.files, .doc),
+            (P.apps, .app), (P.folders, .folder),
         ]
         let lower = text.lowercased()
         for (prefix, tab) in table where lower.hasPrefix(prefix) {
@@ -133,7 +133,7 @@ enum SpotlightModeRows {
     static func help(_ filter: String) -> [SpotlightItem] {
         let processTab = ("Processes tab", "Find and force quit running processes")
         let commands = AppConstants.Launcher.commandCatalog.map { (":" + $0.id, SpotlightCommands.detail(for: $0)) }
-        let entries = [processTab] + commands + helpShortcuts + [("⌘F", "Show in \(FileManagerApp.name)")] + quickLookHelp
+        let entries = [processTab] + commands + helpShortcuts + [("⌘F", "Show in \(FileManagerApp.name)")]
         let needle = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return entries
             .filter { needle.isEmpty || $0.0.lowercased().contains(needle) || $0.1.lowercased().contains(needle) }
@@ -145,19 +145,10 @@ enum SpotlightModeRows {
             }
     }
 
-    /// Quick Look's key is set in Settings ▸ Shortcuts.
-    private static var quickLookHelp: [(String, String)] {
-        guard let combo = SpotlightQuickLook.shortcut else { return [] }
-        return [(combo.display, "Quick Look a document or image (Space / \(combo.display) closes, ↑↓ browse)")]
-    }
-
     private static let helpShortcuts: [(String, String)] = [
         ("⌘K", "Actions for the selected row"),
         ("⇥ / ⇧⇥", "Next / previous filter"),
-        ("⌘1 … ⌘4", "Browse Applications, Folders, Documents or Processes"),
-        ("⌘↩", "Search the web"),
-        ("⌘E", "Open in editor"),
-        ("⌘T", "Open in terminal"),
+        ("⌘1 … ⌘\(QuickBubbles.slotCount)", "Open a launcher quick button"),
         ("⌘D", "Move to Trash · Empty Trash on the Trash pin"),
         ("⌘H", "This help"),
         ("⌘⇧H", "Hide the selected app from results"),

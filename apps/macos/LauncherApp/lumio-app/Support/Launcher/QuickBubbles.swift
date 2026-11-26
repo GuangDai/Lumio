@@ -1,12 +1,12 @@
 import Foundation
 
 /// The round buttons that split off the idle launcher bar: which feature each of the fixed
-/// slots opens, in order, saved as `quick_bubbles=app,folder,doc,process`.
+/// slots opens, in order, saved as `quick_bubbles=app,folder,process`.
 /// Codes are `SpotlightKind` raw values. Pure logic, so it is unit tested (LauncherLogicTests).
 nonisolated enum QuickBubbles {
     static let configKey = "quick_bubbles"
 
-    static let defaultCodes = ["app", "folder", "doc", "process"]
+    static let defaultCodes = ["app", "folder", "process"]
     static let choices = defaultCodes
     static let slotCount = defaultCodes.count
 

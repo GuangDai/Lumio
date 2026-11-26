@@ -9,7 +9,6 @@ mod query;
 pub mod result;
 mod scoring;
 mod search;
-pub mod url_history;
 
 pub use action::{ActionKind, LaunchAction};
 use config::RuntimeConfig;
@@ -17,7 +16,7 @@ use config::RuntimeConfig;
 /// indexing crate for one enum.
 pub use lumio_indexing::UsageAction;
 use lumio_indexing::{Candidate, CandidateIdKind, CandidateKind};
-use lumio_storage::{SearchSettings, SqliteStore, StorageError};
+use lumio_storage::{SqliteStore, StorageError};
 use normalize::normalize_for_search;
 pub use result::{LaunchResult, LaunchResultAction};
 use std::collections::HashMap;
@@ -28,35 +27,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const INDEX_UPSERT_CHUNK_SIZE: usize = 512;
 const USAGE_RETENTION_DAYS: i64 = 90;
 const MAX_USAGE_EVENT_ROWS: usize = 50_000;
-
-/// Structured file query (see `QueryEngine::search_files`).
-#[derive(Debug, Default)]
-pub struct FileFilter {
-    /// Free text for name matching ("resume", "taxes"); empty = no name filter.
-    pub terms: String,
-    /// Categories to keep: pdf, image, screenshot, movie, audio, document,
-    /// spreadsheet, presentation, folder, archive. Empty = any file/folder.
-    pub categories: Vec<String>,
-    /// Modified-time range (unix seconds), inclusive; None = no time filter.
-    pub start: Option<i64>,
-    pub end: Option<i64>,
-    /// Folder hints to scope to: downloads, desktop, documents.
-    pub locations: Vec<String>,
-}
-
-/// Which fallback produced a non-empty file-recall result (see
-/// `QueryEngine::relaxations`); None = the strict query matched.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FileSearchRelaxation {
-    WidenedWindow,
-    DroppedTerms,
-    DroppedTermsWidenedWindow,
-}
-
-pub struct FileSearchOutcome {
-    pub results: Vec<LaunchResult>,
-    pub relaxation: Option<FileSearchRelaxation>,
-}
 
 struct IndexedCandidate {
     candidate: Candidate,
@@ -70,6 +40,7 @@ struct IndexedCandidate {
 #[derive(Default)]
 pub struct QueryEngine {
     candidates: Vec<IndexedCandidate>,
+    folder_ids: HashSet<Box<str>>,
     search_aliases: HashMap<String, Vec<String>>,
 }
 
@@ -80,19 +51,28 @@ impl QueryEngine {
     }
 
     pub fn new_with_config(candidates: Vec<Candidate>, config: &RuntimeConfig) -> Self {
-        // Cached rows can predate the current exclusions. Drop them before ranking.
-        let candidates = candidates
+        let candidates: Vec<_> = candidates
             .into_iter()
             .filter(|candidate| {
-                !matches!(candidate.kind, CandidateKind::File | CandidateKind::Folder)
-                    || !index::should_exclude_path(&candidate.path, &config.file_exclude_paths)
+                !platform::is_excluded_browser_app(candidate)
+                    && (candidate.kind != CandidateKind::Folder
+                        || !index::should_exclude_folder(
+                            Path::new(candidate.path.as_ref()),
+                            config,
+                        ))
             })
             .map(IndexedCandidate::new)
+            .collect();
+        let folder_ids = candidates
+            .iter()
+            .filter(|entry| entry.candidate.kind == CandidateKind::Folder)
+            .map(|entry| entry.candidate.id.clone())
             .collect();
         let search_aliases = config.search_aliases.clone();
 
         Self {
             candidates,
+            folder_ids,
             search_aliases,
         }
     }
@@ -105,90 +85,18 @@ impl QueryEngine {
             .collect()
     }
 
-    /// Natural-language file recall: files/folders filtered by type, modified
-    /// time, and location, ranked most-recent-first. Runs against Lumio's own
-    /// index (fast, no Spotlight); the shell parses the query into a `FileFilter`.
-    /// An empty result relaxes the query progressively (see `relaxations`) so
-    /// near-misses beat an empty panel; `relaxation` reports which fallback
-    /// produced the results so the shell can say so instead of silently showing
-    /// something other than what was asked.
-    pub fn search_files(&self, filter: &FileFilter, limit: usize) -> FileSearchOutcome {
-        let mut indices = self.search_files_indices(filter, limit);
-        let mut relaxation = None;
-        if indices.is_empty() {
-            for (relaxed, kind) in Self::relaxations(filter) {
-                indices = self.search_files_indices(&relaxed, limit);
-                if !indices.is_empty() {
-                    relaxation = Some(kind);
-                    break;
-                }
-            }
-        }
-        let results = indices
-            .into_iter()
-            .map(|(idx, score)| {
-                LaunchResult::from((&self.candidates[idx as usize].candidate, score))
-            })
-            .collect();
-        FileSearchOutcome {
-            results,
-            relaxation,
-        }
-    }
-
-    /// Fallbacks for an empty file-recall result, ordered so the least user
-    /// intent is lost first. Human time memory is fuzzy ("downloaded last
-    /// week" often means "a week or so ago"), so the window doubles backward
-    /// while the terms - the strongest signal of WHAT - are kept. Terms drop
-    /// only after that: an unrecognized glue word the parser didn't strip
-    /// ("files added to ...") lands in terms and would otherwise filter
-    /// everything out. Type and location filters are never relaxed.
-    ///
-    /// Terms are kept when they are the ONLY filter: dropping them leaves a
-    /// query with no constraint at all, which matches the entire index. That
-    /// is not a near miss, it is every file the user owns, and it lets a
-    /// misread query ("bitcoin price") claim the panel with unrelated rows.
-    fn relaxations(filter: &FileFilter) -> Vec<(FileFilter, FileSearchRelaxation)> {
-        let widened_window = match (filter.start, filter.end) {
-            (Some(start), Some(end)) if end > start => Some((start - (end - start), end)),
-            _ => None,
-        };
-        let has_terms = !filter.terms.trim().is_empty();
-        let has_other_filter = !filter.categories.is_empty()
-            || !filter.locations.is_empty()
-            || filter.start.is_some()
-            || filter.end.is_some();
-
-        let build = |terms: &str, window: Option<(i64, i64)>| FileFilter {
-            terms: terms.into(),
-            categories: filter.categories.clone(),
-            start: window.map(|w| w.0).or(filter.start),
-            end: window.map(|w| w.1).or(filter.end),
-            locations: filter.locations.clone(),
-        };
-
-        let mut steps = Vec::new();
-        if let Some(window) = widened_window {
-            steps.push((
-                build(&filter.terms, Some(window)),
-                FileSearchRelaxation::WidenedWindow,
-            ));
-        }
-        if has_terms && has_other_filter {
-            steps.push((build("", None), FileSearchRelaxation::DroppedTerms));
-            if let Some(window) = widened_window {
-                steps.push((
-                    build("", Some(window)),
-                    FileSearchRelaxation::DroppedTermsWidenedWindow,
-                ));
-            }
-        }
-        steps
-    }
-
     /// Number of indexed candidates, without materializing any results.
     pub fn candidate_count(&self) -> usize {
         self.candidates.len()
+    }
+
+    /// Tests whether an ambiguous filesystem event involved an indexed directory.
+    pub fn contains_indexed_folder(&self, path: &Path) -> bool {
+        let Some(path) = path.to_str() else {
+            return false;
+        };
+        let id = index::folder_candidate_id(path);
+        self.folder_ids.contains(id.as_str())
     }
 
     pub fn record_usage_in_memory(&mut self, candidate_id: &str, used_at_unix_s: i64) -> bool {
@@ -211,28 +119,16 @@ impl QueryEngine {
     pub fn demo_candidates() -> Vec<Candidate> {
         vec![
             Candidate::new(
-                "app:safari",
+                "app:terminal",
                 CandidateKind::App,
-                "Safari",
-                "/Applications/Safari.app",
+                "Terminal",
+                "/System/Applications/Utilities/Terminal.app",
             ),
             Candidate::new(
                 "app:vscode",
                 CandidateKind::App,
                 "Visual Studio Code",
                 "/Applications/Visual Studio Code.app",
-            ),
-            Candidate::new(
-                "file:notes",
-                CandidateKind::File,
-                "Notes.txt",
-                "/Users/user/Documents/Notes.txt",
-            ),
-            Candidate::new(
-                "folder:docs",
-                CandidateKind::Folder,
-                "Documents",
-                "/Users/user/Documents",
             ),
         ]
     }
@@ -250,8 +146,7 @@ impl QueryEngine {
 
     /// Like `bootstrap_sqlite`, but only re-walks the sources selected by `scope`
     /// and only prunes stale rows whose candidate id matches one of those sources.
-    /// Used by the file watcher so that, e.g., a change inside an apps directory
-    /// does not force a full rescan of every file root.
+    /// Used by the application watcher to refresh apps without rescanning settings.
     pub fn bootstrap_sqlite_scoped(
         path: impl AsRef<Path>,
         scope: BootstrapScope,
@@ -264,7 +159,11 @@ impl QueryEngine {
             .as_secs() as i64;
         if store.is_demo_seeded()? {
             // Clear demo rows first, then progressively stream real candidates.
-            store.replace_candidates(&[])?;
+            store.delete_unseen_candidates(
+                &HashSet::new(),
+                i64::MAX,
+                &BootstrapScope::ALL.id_prefixes(),
+            )?;
         }
 
         let (rx, producer_handle) =
@@ -310,11 +209,7 @@ impl QueryEngine {
         // build `seen`. Event-driven incremental indexing (watcher paths) would
         // delete only the paths the watcher reported removed.
         let prefixes = scope.id_prefixes();
-        if scope.is_all() {
-            if discovered_count > 0 {
-                let _ = store.delete_unseen_candidates(&seen, run_started_at, &[])?;
-            }
-        } else if !prefixes.is_empty() {
+        if !prefixes.is_empty() && (!scope.is_all() || discovered_count > 0) {
             let _ = store.delete_unseen_candidates(&seen, run_started_at, &prefixes)?;
         }
 
@@ -323,19 +218,6 @@ impl QueryEngine {
         let _ = store.prune_usage_events_to_max(MAX_USAGE_EVENT_ROWS)?;
 
         Ok(())
-    }
-
-    pub fn build_web_search_url(query: &str, settings: SearchSettings) -> Option<String> {
-        let normalized_query = query.trim();
-        if !settings.web_search_enabled || normalized_query.is_empty() {
-            return None;
-        }
-
-        Some(
-            settings
-                .web_search_engine
-                .build_search_url(normalized_query),
-        )
     }
 }
 
@@ -347,6 +229,9 @@ impl IndexedCandidate {
             .subtitle
             .as_ref()
             .map(|subtitle| normalize_for_search(subtitle));
+        #[cfg(windows)]
+        let path_search = normalize_for_search(&candidate.path.replace('\\', "/"));
+        #[cfg(not(windows))]
         let path_search = normalize_for_search(&candidate.path);
         Self {
             candidate,
@@ -363,33 +248,33 @@ impl IndexedCandidate {
 #[derive(Debug, Clone, Copy)]
 pub struct BootstrapScope {
     pub apps: bool,
-    pub files: bool,
+    pub folders: bool,
     pub settings: bool,
 }
 
 impl BootstrapScope {
     pub const ALL: Self = Self {
         apps: true,
-        files: true,
+        folders: true,
         settings: true,
     };
     pub const APPS_ONLY: Self = Self {
         apps: true,
-        files: false,
+        folders: false,
         settings: false,
     };
-    pub const FILES_ONLY: Self = Self {
+    pub const FOLDERS_ONLY: Self = Self {
         apps: false,
-        files: true,
+        folders: true,
         settings: false,
     };
 
     pub fn is_all(&self) -> bool {
-        self.apps && self.files && self.settings
+        self.apps && self.folders && self.settings
     }
 
     pub fn is_empty(&self) -> bool {
-        !(self.apps || self.files || self.settings)
+        !(self.apps || self.folders || self.settings)
     }
 
     pub(crate) fn id_prefixes(&self) -> Vec<&'static str> {
@@ -397,9 +282,7 @@ impl BootstrapScope {
         if self.apps {
             out.push(CandidateIdKind::PREFIX_APP);
         }
-        if self.files {
-            // file:* and folder:* are both produced by the files walker.
-            out.push(CandidateIdKind::PREFIX_FILE);
+        if self.folders {
             out.push(CandidateIdKind::PREFIX_FOLDER);
         }
         if self.settings {
@@ -414,257 +297,12 @@ mod tests {
     use super::*;
     use crate::scoring::default_browse_score;
 
-    fn file_candidate(id: &str, name: &str, path: &str, modified: i64) -> Candidate {
-        let mut c = Candidate::new(id, CandidateKind::File, name, path);
-        c.fs_modified_at_unix_s = Some(modified);
-        c
-    }
-
-    #[test]
-    fn skipped_folders_hide_cached_files_and_folders_from_search() {
-        let config = RuntimeConfig {
-            file_exclude_paths: vec!["/Users/u/Documents/private".into()],
-            ..RuntimeConfig::default()
-        };
-        let engine = QueryEngine::new_with_config(
-            vec![
-                Candidate::new(
-                    "folder:private",
-                    CandidateKind::Folder,
-                    "private",
-                    "/Users/u/Documents/private",
-                ),
-                file_candidate(
-                    "file:hidden",
-                    "report.pdf",
-                    "/Users/u/Documents/private/sub/report.pdf",
-                    2,
-                ),
-                file_candidate(
-                    "file:visible",
-                    "report.pdf",
-                    "/Users/u/Documents/private-work/report.pdf",
-                    1,
-                ),
-            ],
-            &config,
-        );
-        assert!(engine.search("d\"private", 10).is_empty());
-        let results = engine.search("report", 10);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "file:visible");
-        let results = engine.search_files(&FileFilter::default(), 10).results;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "file:visible");
-    }
-
-    #[test]
-    fn file_search_filters_by_window_and_location() {
-        let now = 1_754_000_000;
-        let engine = QueryEngine::new(vec![
-            file_candidate(
-                "file:a",
-                "in-window.pdf",
-                "/Users/u/Downloads/in-window.pdf",
-                now - 86_400,
-            ),
-            file_candidate(
-                "file:b",
-                "old.pdf",
-                "/Users/u/Downloads/old.pdf",
-                now - 40 * 86_400,
-            ),
-            file_candidate(
-                "file:c",
-                "elsewhere.pdf",
-                "/Users/u/Desktop/elsewhere.pdf",
-                now - 86_400,
-            ),
-        ]);
-        let filter = FileFilter {
-            start: Some(now - 7 * 86_400),
-            end: Some(now),
-            locations: vec!["downloads".into()],
-            ..Default::default()
-        };
-        let outcome = engine.search_files(&filter, 10);
-        assert_eq!(outcome.results.len(), 1);
-        assert_eq!(outcome.results[0].title, "in-window.pdf");
-        assert!(outcome.relaxation.is_none());
-    }
-
-    #[test]
-    fn empty_windowed_file_search_widens_backward_once() {
-        // Newest download is 10 days old; a strict 7-day "last week" window
-        // misses it. The retry doubles the window backward (14 days) and finds
-        // it; a far older file stays excluded.
-        let now = 1_754_000_000;
-        let engine = QueryEngine::new(vec![
-            file_candidate(
-                "file:a",
-                "recent-ish.dmg",
-                "/Users/u/Downloads/recent-ish.dmg",
-                now - 10 * 86_400,
-            ),
-            file_candidate(
-                "file:b",
-                "ancient.dmg",
-                "/Users/u/Downloads/ancient.dmg",
-                now - 60 * 86_400,
-            ),
-        ]);
-        let filter = FileFilter {
-            start: Some(now - 7 * 86_400),
-            end: Some(now),
-            ..Default::default()
-        };
-        let outcome = engine.search_files(&filter, 10);
-        assert_eq!(outcome.results.len(), 1);
-        assert_eq!(outcome.results[0].title, "recent-ish.dmg");
-        assert_eq!(
-            outcome.relaxation,
-            Some(FileSearchRelaxation::WidenedWindow)
-        );
-    }
-
-    #[test]
-    fn unmatched_terms_drop_before_giving_up() {
-        // An unrecognized glue word ("files added to desktop" with "added"
-        // surviving as a term) must degrade to the location listing, not to an
-        // empty panel.
-        let now = 1_754_000_000;
-        let engine = QueryEngine::new(vec![file_candidate(
-            "file:a",
-            "notes.md",
-            "/Users/u/Desktop/notes.md",
-            now - 86_400,
-        )]);
-        let filter = FileFilter {
-            terms: "added".into(),
-            locations: vec!["desktop".into()],
-            ..Default::default()
-        };
-        let outcome = engine.search_files(&filter, 10);
-        assert_eq!(outcome.results.len(), 1);
-        assert_eq!(outcome.results[0].title, "notes.md");
-        assert_eq!(outcome.relaxation, Some(FileSearchRelaxation::DroppedTerms));
-    }
-
-    #[test]
-    fn terms_only_recall_never_degrades_to_the_whole_index() {
-        // "bitcoin price" reaches file recall as terms with nothing else.
-        // Dropping them would leave no filter at all and return every file,
-        // which reads as an answer and hides the real one.
-        let now = 1_754_000_000;
-        let engine = QueryEngine::new(vec![
-            file_candidate("file:a", "clip.mp4", "/Users/u/Documents/clip.mp4", now),
-            file_candidate("file:b", "notes.md", "/Users/u/Desktop/notes.md", now),
-        ]);
-        let filter = FileFilter {
-            terms: "bitcoin price".into(),
-            ..Default::default()
-        };
-        let outcome = engine.search_files(&filter, 10);
-        assert!(outcome.results.is_empty());
-        assert_eq!(outcome.relaxation, None);
-    }
-
-    #[test]
-    fn window_widens_before_terms_drop() {
-        // "resume pdf last week" where the resume is 10 days old: widening the
-        // window (keeping the term) must win over dropping the term and
-        // returning every recent pdf.
-        let now = 1_754_000_000;
-        let engine = QueryEngine::new(vec![
-            file_candidate(
-                "file:a",
-                "resume.pdf",
-                "/Users/u/Documents/resume.pdf",
-                now - 10 * 86_400,
-            ),
-            file_candidate(
-                "file:b",
-                "other.pdf",
-                "/Users/u/Documents/other.pdf",
-                now - 2 * 86_400,
-            ),
-        ]);
-        let filter = FileFilter {
-            terms: "resume".into(),
-            start: Some(now - 7 * 86_400),
-            end: Some(now),
-            ..Default::default()
-        };
-        let outcome = engine.search_files(&filter, 10);
-        assert_eq!(outcome.results.len(), 1);
-        assert_eq!(outcome.results[0].title, "resume.pdf");
-        assert_eq!(
-            outcome.relaxation,
-            Some(FileSearchRelaxation::WidenedWindow)
-        );
-    }
-
-    #[test]
-    fn screenshot_category_does_not_filter_its_siblings() {
-        // "screenshots and pdfs": the screenshot PATH heuristic must gate only
-        // its own category, or every pdf without the word is dropped.
-        let now = 1_754_000_000;
-        let engine = QueryEngine::new(vec![
-            file_candidate(
-                "file:a",
-                "Screenshot 1.png",
-                "/Users/u/Desktop/Screenshot 1.png",
-                now,
-            ),
-            file_candidate("file:b", "invoice.pdf", "/Users/u/Desktop/invoice.pdf", now),
-            file_candidate("file:c", "holiday.png", "/Users/u/Desktop/holiday.png", now),
-        ]);
-        let filter = FileFilter {
-            categories: vec!["screenshot".into(), "pdf".into()],
-            ..Default::default()
-        };
-        let titles: Vec<String> = engine
-            .search_files(&filter, 10)
-            .results
-            .into_iter()
-            .map(|r| r.title)
-            .collect();
-        assert!(titles.contains(&"invoice.pdf".to_string()), "{titles:?}");
-        assert!(
-            titles.contains(&"Screenshot 1.png".to_string()),
-            "{titles:?}"
-        );
-        // A plain image is neither a screenshot nor a pdf.
-        assert!(!titles.contains(&"holiday.png".to_string()), "{titles:?}");
-    }
-
-    #[test]
-    fn screenshot_alone_still_requires_the_path() {
-        let now = 1_754_000_000;
-        let engine = QueryEngine::new(vec![
-            file_candidate(
-                "file:a",
-                "Screenshot 1.png",
-                "/Users/u/Desktop/Screenshot 1.png",
-                now,
-            ),
-            file_candidate("file:c", "holiday.png", "/Users/u/Desktop/holiday.png", now),
-        ]);
-        let filter = FileFilter {
-            categories: vec!["screenshot".into()],
-            ..Default::default()
-        };
-        let outcome = engine.search_files(&filter, 10);
-        assert_eq!(outcome.results.len(), 1);
-        assert_eq!(outcome.results[0].title, "Screenshot 1.png");
-    }
-
     #[test]
     fn bootstrap_scope_all_includes_every_source() {
         let s = BootstrapScope::ALL;
         assert!(s.is_all());
         assert!(!s.is_empty());
-        assert!(s.apps && s.files && s.settings);
+        assert!(s.apps && s.folders && s.settings);
     }
 
     #[test]
@@ -676,25 +314,12 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_scope_files_only_includes_file_and_folder_prefixes() {
-        // The files walker emits both `file:` and `folder:` candidates, so a
-        // scoped delete for files must sweep both - otherwise renamed/removed
-        // folders linger forever.
-        let prefixes = BootstrapScope::FILES_ONLY.id_prefixes();
-        assert_eq!(
-            prefixes,
-            vec![CandidateIdKind::PREFIX_FILE, CandidateIdKind::PREFIX_FOLDER]
-        );
-    }
-
-    #[test]
     fn bootstrap_scope_all_yields_every_prefix() {
         let prefixes = BootstrapScope::ALL.id_prefixes();
         assert_eq!(
             prefixes,
             vec![
                 CandidateIdKind::PREFIX_APP,
-                CandidateIdKind::PREFIX_FILE,
                 CandidateIdKind::PREFIX_FOLDER,
                 CandidateIdKind::PREFIX_SETTING,
             ]
@@ -705,7 +330,7 @@ mod tests {
     fn bootstrap_scope_empty_is_detectable() {
         let s = BootstrapScope {
             apps: false,
-            files: false,
+            folders: false,
             settings: false,
         };
         assert!(s.is_empty());
@@ -716,10 +341,10 @@ mod tests {
     fn sample_engine() -> QueryEngine {
         QueryEngine::new(vec![
             Candidate::new(
-                "app:safari",
+                "app:terminal",
                 CandidateKind::App,
-                "Safari",
-                "/Applications/Safari.app",
+                "Terminal",
+                "/System/Applications/Utilities/Terminal.app",
             ),
             Candidate::new(
                 "app:vscode",
@@ -727,25 +352,13 @@ mod tests {
                 "Visual Studio Code",
                 "/Applications/Visual Studio Code.app",
             ),
-            Candidate::new(
-                "file:notes",
-                CandidateKind::File,
-                "Notes.txt",
-                "/Users/test/Documents/Notes.txt",
-            ),
-            Candidate::new(
-                "folder:docs",
-                CandidateKind::Folder,
-                "Documents",
-                "/Users/test/Documents",
-            ),
         ])
     }
 
     #[test]
     fn app_prefix_filters_to_apps() {
         let engine = sample_engine();
-        let results = engine.search_scored("a\"saf", 10);
+        let results = engine.search_scored("a\"term", 10);
         assert!(
             results
                 .iter()
@@ -754,37 +367,7 @@ mod tests {
         assert!(
             results
                 .iter()
-                .any(|(candidate, _)| candidate.id.as_ref() == "app:safari")
-        );
-    }
-
-    #[test]
-    fn file_prefix_filters_to_files() {
-        let engine = sample_engine();
-        let results = engine.search_scored("f\"notes", 10);
-        assert!(
-            results
-                .iter()
-                .all(|(candidate, _)| candidate.kind == CandidateKind::File)
-        );
-        assert_eq!(
-            results.first().map(|(candidate, _)| candidate.id.as_ref()),
-            Some("file:notes")
-        );
-    }
-
-    #[test]
-    fn directory_prefix_filters_to_folders() {
-        let engine = sample_engine();
-        let results = engine.search_scored("d\"doc", 10);
-        assert!(
-            results
-                .iter()
-                .all(|(candidate, _)| candidate.kind == CandidateKind::Folder)
-        );
-        assert_eq!(
-            results.first().map(|(candidate, _)| candidate.id.as_ref()),
-            Some("folder:docs")
+                .any(|(candidate, _)| candidate.id.as_ref() == "app:terminal")
         );
     }
 
@@ -845,21 +428,7 @@ mod tests {
         );
         less_used_app.use_count = 1;
 
-        let folder = Candidate::new(
-            "folder:docs",
-            CandidateKind::Folder,
-            "Documents",
-            "/Users/test/Documents",
-        );
-
-        let file = Candidate::new(
-            "file:notes",
-            CandidateKind::File,
-            "Notes.txt",
-            "/Users/test/Documents/Notes.txt",
-        );
-
-        let engine = QueryEngine::new(vec![file, folder, less_used_app, frequent_app]);
+        let engine = QueryEngine::new(vec![less_used_app, frequent_app]);
         let results = engine.search_scored("", 4);
         let ordered_ids: Vec<&str> = results
             .iter()
@@ -868,10 +437,6 @@ mod tests {
 
         assert_eq!(ordered_ids[0], "app.frequent");
         assert_eq!(ordered_ids[1], "app.less");
-        assert!(
-            ordered_ids.iter().position(|id| *id == "folder:docs")
-                < ordered_ids.iter().position(|id| *id == "file:notes")
-        );
     }
 
     #[test]
@@ -951,29 +516,29 @@ mod tests {
     }
 
     #[test]
-    fn slash_path_query_matches_nested_path_segments() {
+    fn app_scoped_path_query_matches_nested_app_paths() {
         let engine = QueryEngine::new(vec![
             Candidate::new(
-                "file.repo.readme",
-                CandidateKind::File,
-                "README.md",
-                "/Users/test/Documents/git/books-pc/README.md",
+                "app.editor",
+                CandidateKind::App,
+                "Editor",
+                "/Users/test/Applications/editors/portable/Editor.app",
             ),
             Candidate::new(
-                "file.other",
-                CandidateKind::File,
-                "todo.txt",
-                "/Users/test/Downloads/todo.txt",
+                "app.other",
+                CandidateKind::App,
+                "Other",
+                "/Applications/Other.app",
             ),
         ]);
 
-        let results = engine.search_scored("git/books-pc", 10);
+        let results = engine.search_scored("a\"editors/portable", 10);
         assert!(!results.is_empty());
-        assert_eq!(results[0].0.id.as_ref(), "file.repo.readme");
+        assert_eq!(results[0].0.id.as_ref(), "app.editor");
     }
 
     #[test]
-    fn ambiguous_query_ingo_prefers_relevant_file_over_settings_alias_noise() {
+    fn ambiguous_query_ingo_prefers_relevant_app_over_settings_alias_noise() {
         let mut settings = Candidate::new(
             "setting:network",
             CandidateKind::App,
@@ -983,18 +548,18 @@ mod tests {
         settings.subtitle =
             Some("System Settings settings network ethernet dns proxy vpn notifications".into());
 
-        let file = Candidate::new(
-            "file.concurrency",
-            CandidateKind::File,
-            "Concurrency in Go.pdf",
-            "/Users/test/Documents/books/Concurrency in Go.pdf",
+        let app = Candidate::new(
+            "app.concurrency",
+            CandidateKind::App,
+            "Concurrency in Go",
+            "/Applications/Concurrency in Go.app",
         );
 
-        let engine = QueryEngine::new(vec![settings, file]);
+        let engine = QueryEngine::new(vec![settings, app]);
         let results = engine.search_scored("ingo", 10);
         assert_eq!(
             results.first().map(|(candidate, _)| candidate.id.as_ref()),
-            Some("file.concurrency")
+            Some("app.concurrency")
         );
     }
 
@@ -1009,7 +574,7 @@ mod tests {
         settings_app.subtitle = Some("System Settings settings general".into());
 
         let settings_folder = Candidate::new(
-            "folder.settings",
+            "folder:settings",
             CandidateKind::Folder,
             "settings",
             "/Users/test/Documents/settings",
@@ -1036,14 +601,14 @@ mod tests {
             "Notion",
             "/Applications/Notion.app",
         );
-        let file = Candidate::new(
-            "file.note",
-            CandidateKind::File,
-            "notes.txt",
-            "/Users/test/Documents/notes.txt",
+        let folder = Candidate::new(
+            "folder:notes",
+            CandidateKind::Folder,
+            "Notes",
+            "/Users/test/Documents/Notes",
         );
 
-        let engine = QueryEngine::new_with_config(vec![app, file], &config);
+        let engine = QueryEngine::new_with_config(vec![app, folder], &config);
         let results = engine.search_scored("note", 10);
         assert_eq!(
             results.first().map(|(candidate, _)| candidate.id.as_ref()),
@@ -1051,38 +616,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn alias_is_not_applied_for_file_scope_queries() {
-        let mut config = RuntimeConfig::default();
-        config
-            .search_aliases
-            .insert("note".to_string(), vec!["notion".to_string()]);
-
-        let app = Candidate::new(
-            "app.notion",
-            CandidateKind::App,
-            "Notion",
-            "/Applications/Notion.app",
-        );
-        let file = Candidate::new(
-            "file.note",
-            CandidateKind::File,
-            "notes.txt",
-            "/Users/test/Documents/notes.txt",
-        );
-
-        let engine = QueryEngine::new_with_config(vec![app, file], &config);
-        let results = engine.search_scored("f\"note", 10);
-        assert!(
-            results
-                .iter()
-                .all(|(candidate, _)| candidate.kind == CandidateKind::File)
-        );
-        assert_eq!(
-            results.first().map(|(candidate, _)| candidate.id.as_ref()),
-            Some("file.note")
-        );
-    }
     #[test]
     fn alias_brow_does_not_promote_archive_for_arc_term() {
         let mut config = RuntimeConfig::default();

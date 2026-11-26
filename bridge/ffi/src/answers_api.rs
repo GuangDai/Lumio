@@ -1,5 +1,4 @@
-//! C-ABI wrapper over `lumio_answers::classify_url` (URL detection is core
-//! search, not AI). AI web answers removed.
+//! C-ABI wrapper for recognizing a directly typed URL.
 
 use crate::state::{cstr_to_string, json_cstring_or_null};
 use std::os::raw::c_char;

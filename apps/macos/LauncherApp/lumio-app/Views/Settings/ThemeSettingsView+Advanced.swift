@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 extension ThemeSettingsView {
     // MARK: - Preset values (one tap instead of a slider / number field)
@@ -9,9 +8,9 @@ extension ThemeSettingsView {
     private var indexingScopePresets: [(title: String, depth: Int, limit: Int)] {
         [
             (title: "Fast", depth: 2, limit: 1000),
-            (title: "Balanced", depth: 4, limit: 4000),
+            (title: "Balanced", depth: 4, limit: 8000),
             (title: "Thorough", depth: 8, limit: 15000),
-            // Every folder level and the most files the index holds: find anything.
+            // The deepest search and largest folder index.
             (title: "Everything", depth: 12, limit: 50000),
         ]
     }
@@ -33,11 +32,11 @@ extension ThemeSettingsView {
                 .padding(.bottom, 8)
             }
             .onAppear { syncIndexingInputsFromSettings() }
-            .onChange(of: settings.fileScanDepth) { _, _ in
-                fileScanDepthInput = String(settings.fileScanDepth)
+            .onChange(of: settings.folderScanDepth) { _, _ in
+                folderScanDepthInput = String(settings.folderScanDepth)
             }
-            .onChange(of: settings.fileScanLimit) { _, _ in
-                fileScanLimitInput = String(settings.fileScanLimit)
+            .onChange(of: settings.folderScanLimit) { _, _ in
+                folderScanLimitInput = String(settings.folderScanLimit)
             }
 
             Text(HintText.Settings.advancedApply)
@@ -64,12 +63,6 @@ extension ThemeSettingsView {
                         .foregroundStyle(themeStore.secondaryTextColor())
                 }
             }
-            SettingsDivider()
-            SettingsToggleRow(
-                "Liquid Glass", icon: "drop",
-                detail: "macOS 26+. Off uses the classic blur",
-                isOn: $settings.liquidGlassEnabled
-            )
         }
     }
 
@@ -81,17 +74,17 @@ extension ThemeSettingsView {
         }
         SettingsSectionTitle("How much to index")
         SettingsCard {
-            SettingsRow("Scan scope", icon: "scope", detail: "Fast scans less; Everything indexes every folder level, so any file can be found") {
+            SettingsRow("Scan scope", icon: "scope", detail: "Choose how deeply and how many folders Lumio scans") {
                 presetButtons(
                     options: indexingScopePresets.map { $0.title },
                     selected: indexingScopePresets.firstIndex(where: {
-                        $0.depth == settings.fileScanDepth && $0.limit == settings.fileScanLimit
+                        $0.depth == settings.folderScanDepth && $0.limit == settings.folderScanLimit
                     }),
                     onPick: {
-                        settings.fileScanDepth = indexingScopePresets[$0].depth
-                        settings.fileScanLimit = indexingScopePresets[$0].limit
-                        fileScanDepthError = nil
-                        fileScanLimitError = nil
+                        settings.folderScanDepth = indexingScopePresets[$0].depth
+                        settings.folderScanLimit = indexingScopePresets[$0].limit
+                        folderScanDepthError = nil
+                        folderScanLimitError = nil
                         syncIndexingInputsFromSettings()
                     }
                 )
@@ -99,47 +92,47 @@ extension ThemeSettingsView {
             SettingsDivider()
             SettingsToggleRow(
                 "Lazy indexing", icon: "arrow.triangle.2.circlepath",
-                detail: "Refresh the index when the launcher opens after file or app changes",
+                detail: "Refresh the index when the launcher opens after folder or app changes",
                 isOn: $settings.lazyIndexingEnabled
             )
             SettingsDivider()
             SettingsRow(
-                "File scan depth", icon: "arrow.down.to.line",
-                detail: fileScanDepthError ?? "How many directory levels to index (\(AppConstants.FileScan.minDepth)-\(AppConstants.FileScan.maxDepth))"
+                "Folder scan depth", icon: "arrow.down.to.line",
+                detail: folderScanDepthError ?? "How many directory levels to index (\(AppConstants.FolderScan.minDepth)-\(AppConstants.FolderScan.maxDepth))"
             ) {
-                TextField("4", text: $fileScanDepthInput)
+                TextField("4", text: $folderScanDepthInput)
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 80)
-                    .onChange(of: fileScanDepthInput) { _, value in
-                        fileScanDepthInput = sanitizedNumericInput(value)
-                        if let parsed = Int(fileScanDepthInput) {
-                            if parsed >= AppConstants.FileScan.minDepth && parsed <= AppConstants.FileScan.maxDepth {
-                                settings.fileScanDepth = parsed
-                                fileScanDepthError = nil
+                    .onChange(of: folderScanDepthInput) { _, value in
+                        folderScanDepthInput = sanitizedNumericInput(value)
+                        if let parsed = Int(folderScanDepthInput) {
+                            if parsed >= AppConstants.FolderScan.minDepth && parsed <= AppConstants.FolderScan.maxDepth {
+                                settings.folderScanDepth = parsed
+                                folderScanDepthError = nil
                             } else {
-                                fileScanDepthError = "Must be \(AppConstants.FileScan.minDepth)-\(AppConstants.FileScan.maxDepth)"
+                                folderScanDepthError = "Must be \(AppConstants.FolderScan.minDepth)-\(AppConstants.FolderScan.maxDepth)"
                             }
                         }
                     }
             }
             SettingsDivider()
             SettingsRow(
-                "File scan limit", icon: "number",
-                detail: fileScanLimitError ?? "Max files indexed per refresh"
+                "Folder scan limit", icon: "number",
+                detail: folderScanLimitError ?? "Max folders indexed per refresh"
             ) {
-                TextField("4000", text: $fileScanLimitInput)
+                TextField("8000", text: $folderScanLimitInput)
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 80)
-                    .onChange(of: fileScanLimitInput) { _, value in
-                        fileScanLimitInput = sanitizedNumericInput(value)
-                        if let parsed = Int(fileScanLimitInput) {
-                            if parsed >= AppConstants.FileScan.minLimit && parsed <= AppConstants.FileScan.maxLimit {
-                                settings.fileScanLimit = parsed
-                                fileScanLimitError = nil
+                    .onChange(of: folderScanLimitInput) { _, value in
+                        folderScanLimitInput = sanitizedNumericInput(value)
+                        if let parsed = Int(folderScanLimitInput) {
+                            if parsed >= AppConstants.FolderScan.minLimit && parsed <= AppConstants.FolderScan.maxLimit {
+                                settings.folderScanLimit = parsed
+                                folderScanLimitError = nil
                             } else {
-                                fileScanLimitError = "Must be \(AppConstants.FileScan.minLimit)-\(AppConstants.FileScan.maxLimit)"
+                                folderScanLimitError = "Must be \(AppConstants.FolderScan.minLimit)-\(AppConstants.FolderScan.maxLimit)"
                             }
                         }
                     }
@@ -150,8 +143,8 @@ extension ThemeSettingsView {
             SettingsRow("Extra scan folders", icon: "folder.badge.plus", detail: extraScanDirectoryMessage ?? "Index these folders too") {
                 Button("Add Folder…") { selectExtraScanDirectory() }
             } below: {
-                pathChips(themeStore.extraFileScanRoots) { path in
-                    themeStore.removeExtraFileScanRoot(path)
+                pathChips(themeStore.extraFolderScanRoots) { path in
+                    themeStore.removeExtraFolderScanRoot(path)
                     extraScanDirectoryMessage = nil
                 }
             }
@@ -244,21 +237,8 @@ extension ThemeSettingsView {
             KeepSearchSettingsRow()
             SettingsDivider()
             LearningSettingsRow()
-            SettingsDivider()
-            ConfigListSettingsRow(
-                title: "Rank these file types last", icon: "arrow.down.to.line.compact",
-                detail: "File endings that sink below everything else, separated by commas. Empty the box and press Save to rank every file the same",
-                key: SpotlightFiles.lowPriorityConfigKey,
-                fallback: SpotlightFiles.defaultLowPriorityExtensions.sorted().joined(separator: ", ")
-            )
-            SettingsDivider()
-            ConfigListSettingsRow(
-                title: "Extra web search rows", icon: "globe",
-                detail: "Tag keywords (yt, bing, w, amz…) that get their own row under \"Search the web\" for anything you type",
-                key: SpotlightBackend.extraWebRowsKey, fallback: "", placeholder: "e.g. yt, bing"
-            )
         }
-        SettingsSectionTitle("Files and folders")
+        SettingsSectionTitle("Folders")
         SettingsCard {
             FileManagerSettingsRow()
             SettingsDivider()
@@ -396,7 +376,7 @@ extension ThemeSettingsView {
         panel.canChooseFiles = false
         if panel.runModal() == .OK, let url = panel.url {
             withAnimation(Motion.Insert.animation) {
-                if let error = themeStore.addExtraFileScanRoot(url: url) {
+                if let error = themeStore.addExtraFolderScanRoot(url: url) {
                     extraScanDirectoryMessage = error.message
                 } else {
                     extraScanDirectoryMessage = nil
@@ -406,30 +386,30 @@ extension ThemeSettingsView {
     }
 
     func syncIndexingInputsFromSettings() {
-        fileScanDepthInput = String(settings.fileScanDepth)
-        fileScanLimitInput = String(settings.fileScanLimit)
+        folderScanDepthInput = String(settings.folderScanDepth)
+        folderScanLimitInput = String(settings.folderScanLimit)
     }
 
     func sanitizedNumericInput(_ value: String) -> String {
         String(value.filter(\.isNumber))
     }
 
-    func applyFileScanDepthInput() {
-        guard let parsed = Int(fileScanDepthInput), parsed > 0 else {
-            fileScanDepthInput = String(settings.fileScanDepth)
+    func applyFolderScanDepthInput() {
+        guard let parsed = Int(folderScanDepthInput), parsed > 0 else {
+            folderScanDepthInput = String(settings.folderScanDepth)
             return
         }
-        settings.fileScanDepth = min(max(1, parsed), 12)
-        fileScanDepthInput = String(settings.fileScanDepth)
+        settings.folderScanDepth = min(max(1, parsed), 12)
+        folderScanDepthInput = String(settings.folderScanDepth)
     }
 
-    func applyFileScanLimitInput() {
-        guard let parsed = Int(fileScanLimitInput), parsed > 0 else {
-            fileScanLimitInput = String(settings.fileScanLimit)
+    func applyFolderScanLimitInput() {
+        guard let parsed = Int(folderScanLimitInput), parsed > 0 else {
+            folderScanLimitInput = String(settings.folderScanLimit)
             return
         }
-        settings.fileScanLimit = min(max(500, parsed), 50_000)
-        fileScanLimitInput = String(settings.fileScanLimit)
+        settings.folderScanLimit = min(max(500, parsed), 50_000)
+        folderScanLimitInput = String(settings.folderScanLimit)
     }
 
     func runFreshConfigReset() {
@@ -446,7 +426,7 @@ extension ThemeSettingsView {
 
     /// A typed value outside its range: Save stays off until it is fixed.
     var hasInputError: Bool {
-        fileScanDepthError != nil || fileScanLimitError != nil
+        folderScanDepthError != nil || folderScanLimitError != nil
     }
 }
 
@@ -459,7 +439,7 @@ struct FileManagerSettingsRow: View {
     var body: some View {
         SettingsRow(
             "Open folders in", icon: "folder",
-            detail: "Folders open and ⌘F shows files in this app. Automatic follows the system file viewer"
+            detail: "Open folders or reveal an app. Automatic follows the system file viewer"
         ) {
             Picker("Open folders in", selection: Binding(
                 get: { options.first { $0.value.caseInsensitiveCompare(choice) == .orderedSame }?.value ?? "auto" },
@@ -487,7 +467,7 @@ struct FileManagerSettingsRow: View {
 enum LauncherConfigFile {
     static func value(_ key: String) -> String? {
         let raw = (try? String(contentsOfFile: ConfigPathResolver.resolvedPath(), encoding: .utf8)) ?? ""
-        return SearchTags.configLines(raw).last(where: { $0.0 == key })?.1
+        return ConfigFileLines.keyValues(raw)[key]
     }
 
     @discardableResult
@@ -506,14 +486,14 @@ enum LauncherConfigFile {
     }
 }
 
-/// Plugged-in drives in file search, with the drives connected right now named in the row.
+/// Plugged-in drives in folder search, with the drives connected right now named in the row.
 struct ExternalDrivesSettingsRow: View {
     @State private var externalDrives = ExternalDrives.isEnabled
     @State private var driveNames: [String] = []
 
     /// "Connected now: T7, Backup" so it is obvious what the switch covers.
     private var drivesDetail: String {
-        let base = "Find files on plugged-in SSDs, USB sticks and SD cards, with nothing to set up. "
+        let base = "Find folders on plugged-in SSDs, USB sticks and SD cards, with nothing to set up. "
         return base + (driveNames.isEmpty ? "No drive is connected right now"
             : "Connected now: " + driveNames.joined(separator: ", "))
     }
@@ -541,15 +521,14 @@ struct ExternalDrivesSettingsRow: View {
     }
 }
 
-/// Suggestions on the empty field, and web suggestions while typing.
+/// Recently used app suggestions for the empty search field.
 struct LauncherSuggestionRows: View {
     @State private var suggestionsOnOpen = RecentItems.isEnabled
-    @State private var webMode = WebSuggestions.mode
 
     var body: some View {
         SettingsToggleRow(
             "Suggestions when empty", icon: "sparkles",
-            detail: "Show the apps and files you use most before you type. Off brings back the four round buttons",
+            detail: "Show recently used apps before you type",
             isOn: Binding(
                 get: { suggestionsOnOpen },
                 set: { value in
@@ -559,28 +538,8 @@ struct LauncherSuggestionRows: View {
                 }
             )
         )
-        SettingsDivider()
-        SettingsRow(
-            "Web suggestions", icon: "magnifyingglass",
-            detail: "Google's suggestions as you type. This sends the typed text to Google; \"In tags\" limits it to web search tags"
-        ) {
-            Picker("Web suggestions", selection: Binding(
-                get: { webMode },
-                set: { value in
-                    if LauncherConfigFile.set(WebSuggestions.configKey, to: value.rawValue) { webMode = value }
-                }
-            )) {
-                Text("Always").tag(WebSuggestions.Mode.always)
-                Text("In tags").tag(WebSuggestions.Mode.tags)
-                Text("Off").tag(WebSuggestions.Mode.off)
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .fixedSize()
-        }
         .onAppear {
             suggestionsOnOpen = RecentItems.isEnabled
-            webMode = WebSuggestions.mode
         }
     }
 }
@@ -593,8 +552,8 @@ struct IndexStatusRows: View {
 
     private var countsLine: String {
         guard let stats else { return "Reading the index…" }
-        guard stats.total > 0 else { return "The index is empty. Press Rebuild" }
-        var line = "\(stats.files.formatted()) files, \(stats.folders.formatted()) folders and \(stats.apps.formatted()) apps"
+        guard stats.apps + stats.folders > 0 else { return "The index is empty. Press Rebuild" }
+        var line = "\(stats.folders.formatted()) folders and \(stats.apps.formatted()) apps"
         if let updated = stats.updated {
             let formatter = RelativeDateTimeFormatter()
             formatter.unitsStyle = .full
@@ -605,8 +564,8 @@ struct IndexStatusRows: View {
 
     private var spotlightLine: String {
         switch stats?.spotlightOn {
-        case true?: "On. Files anywhere in your home folder, iCloud Drive and plugged-in drives are found through it, with no limit"
-        case false?: "Off. Only the files in Lumio's own index can be found until Spotlight is turned back on in System Settings"
+        case true?: "On. Search indexed folders in your home directory, iCloud Drive and connected drives"
+        case false?: "Off. Folder search uses Lumio's own index"
         case nil: stats == nil ? "Checking…" : "Couldn't check"
         }
     }
@@ -638,8 +597,9 @@ struct IndexStatusRows: View {
             await load()
             rebuilding = false
             let seconds = Date().timeIntervalSince(started)
+            let count = stats.map { $0.apps + $0.folders } ?? 0
             outcome = ok
-                ? "Rebuilt in \(String(format: "%.1f", seconds)) s: \((stats?.total ?? 0).formatted()) items"
+                ? "Rebuilt in \(String(format: "%.1f", seconds)) s: \(count.formatted()) items"
                 : "The rebuild failed. Lumio keeps using the previous index"
         }
     }
@@ -694,51 +654,7 @@ struct AccessibilityStatusRow: View {
     }
 }
 
-/// A comma-separated list kept in the config file, edited in a text box with a Save button.
-struct ConfigListSettingsRow: View {
-    let title: String
-    let icon: String
-    let detail: String
-    let key: String
-    /// Shown when the config has no line for `key`.
-    let fallback: String
-    var placeholder = "none"
-
-    @State private var text = ""
-    @State private var saved = ""
-
-    var body: some View {
-        SettingsRow(title, icon: icon, detail: detail) {
-            HStack(spacing: 8) {
-                TextField(placeholder, text: $text)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 200)
-                    .onSubmit { save() }
-                Button("Save") { save() }
-                    .fixedSize()
-                    .disabled(text == saved)
-            }
-        }
-        .onAppear {
-            saved = LauncherConfigFile.value(key) ?? fallback
-            text = saved
-        }
-    }
-
-    private func save() {
-        let clean = text.split(whereSeparator: { ", ;|".contains($0) })
-            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased() }
-            .filter { !$0.isEmpty }
-            .joined(separator: ", ")
-        if LauncherConfigFile.set(key, to: clean) {
-            saved = clean
-            text = clean
-        }
-    }
-}
-
-/// How long a dismissed search (text and tags) comes back when the launcher is reopened
-/// (Fluent's "Reset search after it was hidden for set seconds", 30 by default).
+/// How long the launcher keeps its previous search after hiding.
 struct KeepSearchSettingsRow: View {
     @State private var seconds = KeepSearchSettingsRow.current()
 

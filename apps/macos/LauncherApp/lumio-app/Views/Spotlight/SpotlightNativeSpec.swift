@@ -16,18 +16,6 @@ import SwiftUI
 struct SpotlightPalette {
     let isDark: Bool
 
-    // Wall (blurred gradient background) — only used if the aurora background is enabled.
-    let wallA: Color
-    let wallB: Color
-    let wallC: Color
-    let wallD: Color
-
-    // Panel
-    let panel: Color
-    let panelLine: Color
-    let panelRing: Color
-    let shadow: Color
-
     // Text
     let text: Color
     let dim: Color
@@ -42,14 +30,6 @@ struct SpotlightPalette {
 
     static let light = SpotlightPalette(
         isDark: false,
-        wallA: Color(hex: "cfd9ea"),
-        wallB: Color(hex: "eef1f6"),
-        wallC: Color(hex: "f6dfe4"),
-        wallD: Color(hex: "dbe7dd"),
-        panel: Color(hex: "f6f6f8").opacity(0.72),
-        panelLine: Color.black.opacity(0.10),
-        panelRing: Color.white.opacity(0.65),
-        shadow: Color(hex: "14161e").opacity(0.28),
         text: Color.black.opacity(0.90),
         dim: Color.black.opacity(0.48),
         faint: Color.black.opacity(0.30),
@@ -62,14 +42,6 @@ struct SpotlightPalette {
 
     static let dark = SpotlightPalette(
         isDark: true,
-        wallA: Color(hex: "2b2740"),
-        wallB: Color(hex: "121319"),
-        wallC: Color(hex: "3a2739"),
-        wallD: Color(hex: "16242c"),
-        panel: Color(hex: "28282a").opacity(0.70),
-        panelLine: Color.white.opacity(0.12),
-        panelRing: Color.white.opacity(0.14),
-        shadow: Color.black.opacity(0.60),
         text: Color.white.opacity(0.94),
         dim: Color.white.opacity(0.52),
         faint: Color.white.opacity(0.34),
@@ -89,10 +61,6 @@ struct SpotlightPalette {
 
 enum SpotlightSpec {
     enum Metric {
-        // Search bar + round buttons measured on the real Spotlight in macOS 26/27, captured
-        // next to this launcher: bar 638×58pt, placeholder ~26pt, 56pt buttons spaced
-        // 10pt apart, and the cluster (shrunk bar + 4 buttons) is EXACTLY as wide as the full bar.
-
         /// Search bar height.
         static let barHeight: CGFloat = 58
         /// Full bar width (when there are no round buttons).
@@ -105,7 +73,7 @@ enum SpotlightSpec {
         static let barPadding: CGFloat = 21
         /// Font size of the search field and magnifying glass.
         static let queryFontSize: CGFloat = 26
-        static let glassIconSize: CGFloat = 22
+        static let searchIconSize: CGFloat = 22
         /// Maximum rows shown without scrolling; the rest scroll inside the panel.
         static let maxVisibleRows = 7
         static let pillGap: CGFloat = 8
@@ -113,11 +81,10 @@ enum SpotlightSpec {
         static let topInsetRatio: CGFloat = 0.15
         static let sideInset: CGFloat = 16
 
-        // "Idle" state (empty field): the bar shrinks from the right and the 4 round buttons fill
-        // the space it gave up — total width stays the same, like the real Spotlight.
+        // Quick buttons take the space freed by the idle bar.
         static let quickSize: CGFloat = 56
         static let quickGap: CGFloat = 10
-        static let quickCount = 4
+        static let quickCount = QuickBubbles.slotCount
         static let idleWidth: CGFloat = panelWidth - CGFloat(quickCount) * (quickSize + quickGap)
 
         // Lower part of the panel. Each section has a fixed height so the panel height
@@ -128,10 +95,7 @@ enum SpotlightSpec {
         static let listInsetBottom: CGFloat = 6
         static let emptyListHeight: CGFloat = 52
         static let footerHeight: CGFloat = 34
-        /// The open panel is at least this many rows tall: the right half is the preview,
-        /// which needs enough room for code / images.
-        // 7 (was 5): the preview's quick actions list needs the full height, and a panel that
-        // keeps one size while results change reads calmer (Fluent Search's is fixed too).
+        /// Keep enough room for the result details and action list.
         static let minRowsWithPreview = 7
     }
 
@@ -165,7 +129,7 @@ enum SpotlightSpec {
 // resizing parts, a slightly bouncy spring for things that "pop" out.
 
 enum SpotlightMotion {
-    // Open: the glass cluster springs from small to full size, overshoots a little (~3%) and
+    // Open: the launcher springs from small to full size, overshoots a little (~3%) and
     // settles — the macOS Spotlight "pop". Lower dampingFraction = more bounce.
     static let appearScale: CGFloat = 0.82
     static let appearOffsetY: CGFloat = -6
@@ -182,7 +146,7 @@ enum SpotlightMotion {
     static let launchScale: CGFloat = 1.04
     static let launch = Animation.easeOut(duration: launchSeconds)
 
-    /// Round buttons split off from the bar. A spring so the glass droplets look "liquid".
+    /// Round buttons spring out as the search bar shrinks.
     static let morph = Animation.spring(response: 0.5, dampingFraction: 0.8)
     /// Round buttons merge back into the bar when typing starts: snappier than splitting, since the
     /// user is waiting for results. The bar widens to the right here — no spring, so the right edge
@@ -191,9 +155,9 @@ enum SpotlightMotion {
     /// Typing while round buttons are showing: the panel waits until the bar has nearly finished growing
     /// before dropping down, so results fall straight down instead of sweeping diagonally left to right.
     static let expandAfterMerge = 0.12
-    /// How long the field must be empty before the 4 round buttons split off.
+    /// How long the field must be empty before the quick buttons appear.
     static let idleDelay: Duration = .milliseconds(1200)
-    /// Icons in the round buttons appear one by one, slightly after the glass droplets.
+    /// Icons in the round buttons appear one by one after the buttons.
     static func quickIcon(_ index: Int) -> Animation {
         .spring(response: 0.4, dampingFraction: 0.62).delay(0.1 + Double(index) * 0.05)
     }

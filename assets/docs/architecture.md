@@ -5,7 +5,7 @@ Lumio is a native SwiftUI app on top of a Rust core. Swift owns everything the u
 ```text
 ┌──────────────────────────────────────────────┐
 │ macOS app (Swift / SwiftUI)                  │  apps/macos/LauncherApp
-│ panel window, views, hotkey, file search     │
+│ panel window, views, hotkey, browser tabs    │
 └──────────────────────┬───────────────────────┘
                        │ C ABI, JSON strings
 ┌──────────────────────▼───────────────────────┐
@@ -47,7 +47,7 @@ Searches are in-memory. SQLite is only touched to load the index at startup and 
 | Data | Location |
 | --- | --- |
 | Settings | `~/.lumio/config` |
-| Candidates, usage, web search history | SQLite, `~/Library/Application Support/lumio/` |
+| App, folder and settings candidates, usage | SQLite, `~/Library/Application Support/lumio/` |
 
 ## Further reading
 

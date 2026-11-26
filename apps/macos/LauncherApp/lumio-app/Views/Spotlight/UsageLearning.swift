@@ -7,9 +7,8 @@
 //  similar it is offered first, instantly (it is stored, not searched for again). The more
 //  often and the more recently you pick something, the higher it ranks.
 //
-//  The Rust core already learns for the apps and files in its own index; this covers
-//  everything else Lumio lists (files from anywhere on the Mac, history pages, bookmarks,
-//  links) and adds the "for THIS search" part.
+//  The Rust core learns app and folder usage. This also tracks picks for a particular query,
+//  including bookmarks, Chromium history pages and links.
 //
 //  Stored locally in ~/Library/Application Support/lumio/learned.json. Delete the file to
 //  forget everything. Nothing leaves the Mac.
@@ -22,6 +21,7 @@ final class UsageLearning {
 
     private struct Entry: Codable {
         var kind: String
+        var sourceID: String?
         var name: String
         var meta: String?
         var target: String
@@ -52,7 +52,14 @@ final class UsageLearning {
         guard let data = try? Data(contentsOf: Self.file) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        entries = (try? decoder.decode([String: Entry].self, from: data)) ?? [:]
+        let saved = (try? decoder.decode([String: Entry].self, from: data)) ?? [:]
+        entries = saved.filter { _, entry in
+            SpotlightItem.acceptsSavedTarget(
+                kind: entry.kind, sourceID: entry.sourceID ?? entry.candidateID,
+                name: entry.name, target: entry.target,
+                iconPath: entry.iconPath, symbol: entry.symbol, meta: entry.meta
+            )
+        }
     }
 
     private func save() {
@@ -88,12 +95,13 @@ final class UsageLearning {
     /// Kinds worth remembering: things with a stable target to open again.
     private static func storable(_ item: SpotlightItem) -> (kind: SpotlightKind, target: String)? {
         switch item.kind {
-        case .app, .folder, .doc, .url:
-            guard let target = item.target, !target.isEmpty else { return nil }
+        case .app, .folder, .url:
+            guard let target = item.target, !target.isEmpty,
+                  item.canSave(as: item.kind, target: target) else { return nil }
             return (item.kind, target)
         case .tab:
             // A tab's window/index is gone tomorrow; its address is not.
-            guard let url = item.tab?.url ?? item.target else { return nil }
+            guard let url = item.tab?.url ?? item.target, item.canSave(as: .url, target: url) else { return nil }
             return (.url, url)
         default:
             return nil
@@ -107,7 +115,7 @@ final class UsageLearning {
         let key = target.lowercased()
         let typed = Self.normalize(query)
         var entry = entries[key] ?? Entry(
-            kind: kind.rawValue, name: item.name, meta: item.meta, target: target,
+            kind: kind.rawValue, sourceID: item.id, name: item.name, meta: item.meta, target: target,
             iconPath: item.iconPath, colors: item.colors, symbol: item.symbol, favicon: item.favicon,
             candidateID: item.candidateID, count: 0, last: Date(), queries: [:]
         )
@@ -145,7 +153,12 @@ final class UsageLearning {
         return scored
             .sorted { $0.1 > $1.1 }
             .lazy
-            .filter { !$0.0.target.hasPrefix("/") || FileManager.default.fileExists(atPath: $0.0.target) }
+            .filter { entry, _ in
+                if entry.kind == SpotlightKind.folder.rawValue {
+                    return SpotlightBackend.isBrowsableFolder(at: URL(fileURLWithPath: entry.target))
+                }
+                return !entry.target.hasPrefix("/") || FileManager.default.fileExists(atPath: entry.target)
+            }
             .prefix(limit)
             .compactMap { entry, _ in Self.item(from: entry) }
     }

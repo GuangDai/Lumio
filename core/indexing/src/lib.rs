@@ -6,7 +6,6 @@ use std::sync::mpsc;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CandidateKind {
     App,
-    File,
     Folder,
     /// A row with no filesystem target: a bundle of steps, or a row a user's
     /// list or command produced. It is performed, never opened.
@@ -16,18 +15,16 @@ pub enum CandidateKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateIdKind {
     App,
-    File,
     Folder,
     Setting,
     /// A row from a user-declared source. Its own namespace so a source refresh
     /// prunes only its own rows, and so a row can be told apart from an
-    /// identically-shaped one the file walker produced.
+    /// identically-shaped one built-in discovery produced.
     Source,
 }
 
 impl CandidateIdKind {
     pub const PREFIX_APP: &'static str = "app:";
-    pub const PREFIX_FILE: &'static str = "file:";
     pub const PREFIX_FOLDER: &'static str = "folder:";
     pub const PREFIX_SETTING: &'static str = "setting:";
     pub const PREFIX_SOURCE: &'static str = "src:";
@@ -35,7 +32,6 @@ impl CandidateIdKind {
     pub fn as_prefix(&self) -> &'static str {
         match self {
             CandidateIdKind::App => Self::PREFIX_APP,
-            CandidateIdKind::File => Self::PREFIX_FILE,
             CandidateIdKind::Folder => Self::PREFIX_FOLDER,
             CandidateIdKind::Setting => Self::PREFIX_SETTING,
             CandidateIdKind::Source => Self::PREFIX_SOURCE,
@@ -45,8 +41,6 @@ impl CandidateIdKind {
     pub fn from_candidate_id(id: &str) -> Option<Self> {
         if id.starts_with(Self::PREFIX_APP) {
             Some(Self::App)
-        } else if id.starts_with(Self::PREFIX_FILE) {
-            Some(Self::File)
         } else if id.starts_with(Self::PREFIX_FOLDER) {
             Some(Self::Folder)
         } else if id.starts_with(Self::PREFIX_SETTING) {
@@ -315,31 +309,25 @@ mod id_tests {
 pub enum UsageAction {
     Open,
     OpenApp,
-    OpenFile,
     OpenFolder,
     OpenUrl,
     Execute,
-    WebSearch,
 }
 
 impl UsageAction {
     pub const OPEN: &'static str = "open";
     pub const OPEN_APP: &'static str = "open_app";
-    pub const OPEN_FILE: &'static str = "open_file";
     pub const OPEN_FOLDER: &'static str = "open_folder";
     pub const OPEN_URL: &'static str = "open_url";
     pub const EXECUTE: &'static str = "execute";
-    pub const WEB_SEARCH: &'static str = "web_search";
 
     pub fn as_str(&self) -> &'static str {
         match self {
             UsageAction::Open => Self::OPEN,
             UsageAction::OpenApp => Self::OPEN_APP,
-            UsageAction::OpenFile => Self::OPEN_FILE,
             UsageAction::OpenFolder => Self::OPEN_FOLDER,
             UsageAction::OpenUrl => Self::OPEN_URL,
             UsageAction::Execute => Self::EXECUTE,
-            UsageAction::WebSearch => Self::WEB_SEARCH,
         }
     }
 }
@@ -351,11 +339,9 @@ impl FromStr for UsageAction {
         match s {
             Self::OPEN => Ok(Self::Open),
             Self::OPEN_APP => Ok(Self::OpenApp),
-            Self::OPEN_FILE => Ok(Self::OpenFile),
             Self::OPEN_FOLDER => Ok(Self::OpenFolder),
             Self::OPEN_URL => Ok(Self::OpenUrl),
             Self::EXECUTE => Ok(Self::Execute),
-            Self::WEB_SEARCH => Ok(Self::WebSearch),
             _ => Err(()),
         }
     }
@@ -363,14 +349,12 @@ impl FromStr for UsageAction {
 
 impl CandidateKind {
     pub const APP_KEY: &'static str = "app";
-    pub const FILE_KEY: &'static str = "file";
     pub const FOLDER_KEY: &'static str = "folder";
     pub const ACTION_KEY: &'static str = "action";
 
     pub fn as_str(&self) -> &'static str {
         match self {
             CandidateKind::App => Self::APP_KEY,
-            CandidateKind::File => Self::FILE_KEY,
             CandidateKind::Folder => Self::FOLDER_KEY,
             CandidateKind::Action => Self::ACTION_KEY,
         }
@@ -379,7 +363,6 @@ impl CandidateKind {
     pub fn from_key(value: &str) -> Option<Self> {
         match value {
             Self::APP_KEY => Some(CandidateKind::App),
-            Self::FILE_KEY => Some(CandidateKind::File),
             Self::FOLDER_KEY => Some(CandidateKind::Folder),
             Self::ACTION_KEY => Some(CandidateKind::Action),
             _ => None,
@@ -402,10 +385,6 @@ pub struct Candidate {
     pub path: Box<str>,
     pub use_count: u64,
     pub last_used_at_unix_s: Option<i64>,
-    /// Filesystem modification time (Unix seconds), captured at index time.
-    /// Lets the "recent" view surface freshly downloaded/created files the user
-    /// hasn't opened through Lumio yet. `None` for app/settings candidates.
-    pub fs_modified_at_unix_s: Option<i64>,
     /// What to draw this row as, when it asked for something. Only a declared
     /// source sets it; everything else takes its icon from the kind or the path.
     pub icon: Option<Box<str>>,
@@ -433,13 +412,12 @@ impl Default for Candidate {
     fn default() -> Self {
         Self {
             id: "".into(),
-            kind: CandidateKind::File,
+            kind: CandidateKind::App,
             title: "".into(),
             subtitle: None,
             path: "".into(),
             use_count: 0,
             last_used_at_unix_s: None,
-            fs_modified_at_unix_s: None,
             icon: None,
         }
     }

@@ -1,19 +1,7 @@
 import AppKit
-import Quartz
 import SwiftUI
 
-// macOS 26-style Spotlight launcher: Liquid Glass + animation.
-//
-// TIMING (every value lives in SpotlightMotion):
-// 1. Open   — the glass cluster pops from 0.92 to 1, bounces gently, fades in.
-// 2. Idle   — empty field for ~1.2s: the bar shrinks from the RIGHT (left edge stays put), 4 round buttons
-//             split off the bar like glass droplets (glassEffectID within one group).
-// 3. Type   — the round buttons merge back into the bar, the bar grows; the panel expands down to reveal
-//             results, rows rise one by one (only on the first expand).
-// 4. Close  — fade + slight shrink, then orderOut. Enter opens an item: slight zoom + dissolve.
-//
-// The window does not change size while animating (see SpotlightWindowSizing). The data
-// is still the fake data in SpotlightLauncherModels — this is just the UI part.
+// The panel stays within a fixed window frame while its contents animate.
 
 struct SpotlightQuickItem: Identifiable {
     let kind: SpotlightKind
@@ -35,7 +23,6 @@ struct SpotlightLauncherView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var themeStore = ThemeStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var glassSpace
     /// Selection bar that slides between rows (matchedGeometryEffect).
     @Namespace private var selectionSpace
 
@@ -65,12 +52,14 @@ struct SpotlightLauncherView: View {
     @State private var scope: SpotlightItem?
     /// Query before opening actions — restored on exit.
     @State private var scopeReturnQuery = ""
+    /// Non-nil while the selected application's details page is open.
+    @State private var selectedPreviewActionID: String?
     /// Text left in the field when the launcher was dismissed; restored on the next open.
     @State private var keptQuery = ""
     /// Tab open when the launcher was dismissed; reopened with `keptQuery`.
     @State private var keptBrowse: SpotlightKind?
-    /// Tag chips on the field when the launcher was dismissed; restored with `keptQuery`.
-    @State private var keptTags: [SearchTag] = []
+    /// Active tag when the launcher was dismissed; restored with `keptQuery`.
+    @State private var keptTag: SearchTag?
     /// A search was just brought back: select its text once the field has it, so typing replaces it.
     @State private var restoredQuery: String?
     /// How the list is ordered (footer button / ⌥S). Back to Default on every fresh open.
@@ -79,32 +68,21 @@ struct SpotlightLauncherView: View {
     private static let tagsCommand = "tags"
     private static let windowsBlockedRow = "windows|blocked"
     @State private var browse: SpotlightKind?
-    /// Active search tag (`yt` + Tab → "YouTube" chip): the text is searched on that site.
-    @State private var tagStack: [SearchTag] = []
-    /// The stack as one tag: `downloads` ⇥ `pdf` ⇥ → PDFs in Downloads. nil = no tag.
-    private var tag: SearchTag? {
-        tagStack.dropFirst().reduce(tagStack.first) { merged, next in merged?.stacked(with: next) ?? merged }
-    }
-    /// Empty-field suggestions (recent apps / files) are on screen.
+    @State private var tag: SearchTag?
+    /// Recently used apps and pins are on screen.
     @State private var showingSuggestions = false
     /// `suggestions_on_open` in the config, read on each open.
     @State private var suggestionsEnabled = false
     /// Pinned results: listed first when the search field is empty.
     @ObservedObject private var pins = PinStore.shared
-    /// Right pane for a file: false = details card (Fluent's default), true = the preview. ⌥P.
-    @AppStorage("lumio.preview.files") private var previewFiles = false
-    /// Right pane for a folder: true = its newest files, false = details card. ⌥P.
-    @AppStorage("lumio.preview.folders") private var previewFolders = true
     /// Bundle paths of the apps running when the launcher opened (a dot marks their rows).
     @State private var runningApps: Set<String> = []
-    /// `web_suggestions` in the config (tags / always / off), read on each open.
-    @State private var webSuggestMode = WebSuggestions.Mode.tags
     @State private var scrollTarget: String?
     @State private var scrollWraps = false
     /// The core search in flight (nil = results already match the input).
     @State private var searchTask: Task<Void, Never>?
-    /// Whole-Mac file matches (Spotlight), added after the first results are on screen.
-    @State private var fileTask: Task<Void, Never>?
+    /// Directory and browser matches added after the primary results.
+    @State private var extrasTask: Task<Void, Never>?
     /// Enter pressed before results for the latest text arrived: open as soon as they do.
     @State private var activateWhenReady = false
 
@@ -122,13 +100,11 @@ struct SpotlightLauncherView: View {
     @State private var panelHeight = SpotlightSpec.Metric.barHeight
     /// Delay for the next height animation (see SpotlightMotion.expandAfterMerge).
     @State private var resizeDelay: Double = 0
-    /// When the 4 round buttons started merging back into the bar.
+    /// When the quick buttons started moving back into the bar.
     @State private var mergeStartedAt = Date.distantPast
     @State private var introUntil = Date.distantPast
     @State private var toastMsg: String?
     @State private var mouseGate = MouseGate()
-    /// Bumped when a PreviewFacts lookup lands, so the chips are built again with it.
-    @State private var previewFactsTick = 0
 
     @StateObject private var processModel = ProcessFinderModel()
     /// Command currently open (`:kill`, `:emptytrash`, `:help`). nil = normal search.
@@ -166,10 +142,21 @@ struct SpotlightLauncherView: View {
 
     private var inProcessTab: Bool { browse == .process }
 
+    private var isFinderPage: Bool {
+        selectedPreviewActionID != nil && scope.map(Self.isFinder) == true
+    }
+
+    private var showsFinderResults: Bool {
+        isFinderPage && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var showsActionDetails: Bool {
+        selectedPreviewActionID != nil && !showsFinderResults
+    }
+
     private var panelWidth: CGFloat { idle ? Metric.idleWidth : Metric.panelWidth }
 
-    /// The panel always leaves room for at least `minRowsWithPreview` rows when open: the right half is the
-    /// preview, which needs room for code / images even with just one or two results.
+    /// Keeps the actions pane usable even with just one or two results.
     private var rowSlots: Int { max(results.count, Metric.minRowsWithPreview) }
 
     /// Width of the list column; the rest of the panel is the preview.
@@ -177,44 +164,34 @@ struct SpotlightLauncherView: View {
 
     /// Item shown in the preview pane: the item whose actions are being viewed, otherwise the selected row.
     private var previewItem: SpotlightItem? {
-        scope ?? (sel < results.count ? results[sel] : nil)
+        let selected = sel < results.count ? results[sel] : nil
+        return showsFinderResults ? selected : scope ?? selected
     }
 
     private var targetPanelHeight: CGFloat {
         Metric.barHeight + (expanded ? SpotlightSpec.lowerHeight(rows: rowSlots) : 0)
     }
 
-    /// Icon at the end of the bar: the item whose actions are being viewed, otherwise the top result.
-
     /// Home: the empty field, showing pinned items and then suggestions as the usual list.
     private var isHome: Bool {
-        showingSuggestions && query.isEmpty && browse == nil && tagStack.isEmpty && scope == nil
+        showingSuggestions && query.isEmpty && browse == nil && tag == nil && scope == nil
             && activeCommand == nil
     }
 
     private var chipLabel: String? {
         scope?.name ?? activeCommand.map { $0 == Self.tagsCommand ? "Tags" : ":" + $0 }
-            ?? (tagStack.isEmpty ? browse?.label : nil)
+            ?? (tag == nil ? browse?.label : nil)
     }
 
     /// Changes when the actions scope or the search tag changes.
-    private var chipKey: String { "\(scope?.id ?? "")|\(tagStack.map(\.keyword).joined(separator: "+"))" }
+    private var chipKey: String { "\(scope?.id ?? "")|\(tag?.keyword ?? "")" }
 
     private var placeholder: String {
+        if isFinderPage { return "Find a folder or enter a path" }
         if let scope { return "Actions for \(scope.name)" }
         if activeCommand == Self.tagsCommand { return "Find a tag, then ⏎" }
         if let activeCommand { return SpotlightCommands.placeholder(for: activeCommand) }
-        if let tag {
-            // "search in the downloads folder", "search .psd files", "search YouTube".
-            if let files = tag.files {
-                if files.contentSearch { return "search inside your files" }
-                if !files.folders.isEmpty, files.extensions.isEmpty, files.contentTypes.isEmpty {
-                    return "search in the \(tag.name.lowercased()) folder"
-                }
-                return "search \(tag.name.lowercased())"
-            }
-            return "search \(tag.name)"
-        }
+        if let tag { return "Search \(tag.name)" }
         if let browse { return "Search in \(browse.label)" }
         return "Lumio Search"
     }
@@ -251,7 +228,7 @@ struct SpotlightLauncherView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // Clicking outside the glass cluster closes it, like Spotlight.
+            // Clicking outside the launcher closes it.
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture { point in
@@ -283,12 +260,6 @@ struct SpotlightLauncherView: View {
         }
         // Entering / leaving actions (⌘K) or a search tag (⇥ / ⌫) re-runs the search.
         .onChange(of: chipKey) { refresh() }
-        .onChange(of: themeStore.excludedFolderPaths) {
-            guard isOpen, !dismissing else { return }
-            all.removeAll(where: isSkippedFileRow)
-            sel = 0
-            refresh()
-        }
         .onChange(of: browse) {
             sel = 0
             filter = nil
@@ -369,26 +340,21 @@ struct SpotlightLauncherView: View {
         )
     }
 
-    // MARK: - Glass cluster: panel + 4 round buttons
+    // MARK: - Panel and quick buttons
 
     private var cluster: some View {
-        SpotlightGlassGroup(spacing: Metric.quickGap + 2) {
-            HStack(alignment: .top, spacing: Metric.quickGap) {
-                panel
-                if idle {
-                    ForEach(Array(Self.quickItems.enumerated()), id: \.element.id) { index, item in
-                        quickButton(item, index: index)
-                    }
+        HStack(alignment: .top, spacing: Metric.quickGap) {
+            panel
+            if idle {
+                ForEach(Array(Self.quickItems.enumerated()), id: \.element.id) { index, item in
+                    quickButton(item, index: index)
                 }
             }
         }
     }
 
     private var panel: some View {
-        // Panel width animates (430 ↔ 660) when the 4 round buttons split/merge. The content
-        // below the bar and the top-hit icon are laid out up front at the FINAL width, anchored to the
-        // left edge: the glass edge just gradually reveals them. Laying out at the animating width
-        // would drag the scrollbar, icon and right-hand text sliding from left to right.
+        // Keep the lower panel laid out at full width while the search bar changes width.
         VStack(alignment: .leading, spacing: 0) {
             searchBar
             lower
@@ -397,7 +363,7 @@ struct SpotlightLauncherView: View {
         .frame(width: panelWidth, height: panelHeight, alignment: .topLeading)
         .clipShape(panelShape)
         .contentShape(panelShape)
-        .spotlightGlass(panelShape, id: "spotlight.panel", in: glassSpace, isDark: isDark)
+        .spotlightSurface(panelShape, isDark: isDark)
     }
 
     private func quickButton(_ item: SpotlightQuickItem, index: Int) -> some View {
@@ -420,13 +386,7 @@ struct SpotlightLauncherView: View {
                 .animation(motion(SpotlightMotion.chip), value: focused)
         }
         .buttonStyle(.plain)
-        .spotlightGlass(
-            RoundedRectangle(cornerRadius: themeStore.settings.cornerRadius(side: Metric.quickSize), style: .continuous),
-            id: "spotlight.quick.\(item.kind.rawValue)",
-            in: glassSpace,
-            interactive: true,
-            isDark: isDark
-        )
+        .spotlightSurface(shape, isDark: isDark)
         .help("\(item.label)  ⌘\(index + 1)")
         .accessibilityLabel(item.label)
     }
@@ -435,8 +395,8 @@ struct SpotlightLauncherView: View {
 
     private var searchBar: some View {
         HStack(spacing: 15) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: Metric.glassIconSize, weight: .regular))
+            Image(systemName: showsActionDetails && !isFinderPage ? "ellipsis.circle" : "magnifyingglass")
+                .font(.system(size: Metric.searchIconSize, weight: .regular))
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
 
@@ -459,44 +419,45 @@ struct SpotlightLauncherView: View {
                     ))
             }
 
-            // Search tags: one chip each, like Fluent Search (`documents` `.docx` resume).
-            if scope == nil, activeCommand == nil {
-                ForEach(Array(tagStack.enumerated()), id: \.offset) { _, item in
-                    HStack(spacing: 5) {
-                        Image(systemName: item.symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text(item.name)
-                            .font(.system(size: 15, weight: .medium))
-                            .lineLimit(1)
-                    }
-                    .fixedSize()
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(palette.pillOn, in: Capsule())
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.6, anchor: .leading)
-                            .combined(with: .opacity)
-                            .animation(motion(SpotlightMotion.chip).delay(0.1)),
-                        removal: .opacity.animation(.easeOut(duration: 0.08))
-                    ))
+            if scope == nil, activeCommand == nil, let tag {
+                HStack(spacing: 5) {
+                    Image(systemName: tag.symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(tag.name)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(1)
                 }
+                .fixedSize()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(palette.pillOn, in: Capsule())
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.6, anchor: .leading)
+                        .combined(with: .opacity)
+                        .animation(motion(SpotlightMotion.chip).delay(0.1)),
+                    removal: .opacity.animation(.easeOut(duration: 0.08))
+                ))
             }
 
             // The legacy launcher's input field: the caret SLIDES to its new position while typing (still
             // while typing, blinking when paused) instead of jumping per character.
             // Enter goes through onSubmit (respecting an input method that is committing text); other
             // navigation keys: see handleKey (local key monitor).
-            SmoothCaretTextField(
-                text: $query,
-                placeholder: placeholder,
-                isFocused: $isFocused,
-                font: .systemFont(ofSize: Metric.queryFontSize),
-                onSubmit: { activate() }
-            )
-            .frame(maxWidth: .infinity)
+            if showsActionDetails, !isFinderPage {
+                Spacer(minLength: 0)
+            } else {
+                SmoothCaretTextField(
+                    text: $query,
+                    placeholder: placeholder,
+                    isFocused: $isFocused,
+                    font: .systemFont(ofSize: Metric.queryFontSize),
+                    onSubmit: { activate() }
+                )
+                .frame(maxWidth: .infinity)
+            }
 
-            // What Tab would do right now ("press TAB to search in Downloads"), like Fluent Search.
+            // What Tab would do right now ("press TAB to search in Bookmarks"), like Fluent Search.
             if let tabHint {
                 // fixedSize: the text field is greedy and would otherwise squeeze this to nothing.
                 Text(tabHint)
@@ -532,21 +493,26 @@ struct SpotlightLauncherView: View {
     /// Filter pills, then the list on the left and the preview on the right.
     @ViewBuilder
     private var resultsArea: some View {
-        pillsRow
-            .frame(height: Metric.pillsHeight)
-            .padding(.top, Metric.lowerTopInset)
-        // Split INSIDE the panel: list on the left, preview on the right.
-        HStack(spacing: 0) {
-            listView
-                .frame(width: listPaneWidth)
-            Rectangle()
-                .fill(palette.divider)
-                .frame(width: 1)
-                .padding(.vertical, 8)
+        if showsActionDetails {
             previewPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(height: Metric.pillsHeight + SpotlightSpec.listHeight(rows: rowSlots))
+                .padding(.top, Metric.lowerTopInset)
+        } else {
+            pillsRow
+                .frame(height: Metric.pillsHeight)
+                .padding(.top, Metric.lowerTopInset)
+            HStack(spacing: 0) {
+                listView
+                    .frame(width: listPaneWidth)
+                Rectangle()
+                    .fill(palette.divider)
+                    .frame(width: 1)
+                    .padding(.vertical, 8)
+                previewPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(height: SpotlightSpec.listHeight(rows: rowSlots))
         }
-        .frame(height: SpotlightSpec.listHeight(rows: rowSlots))
     }
 
     /// Right half of the panel: preview of the selected row (or the item whose actions are open).
@@ -556,20 +522,17 @@ struct SpotlightLauncherView: View {
                 SpotlightPreviewView(
                     item: item,
                     chips: previewChips(for: item),
-                    showsPreview: item.kind == .folder ? previewFolders : previewFiles,
-                    onTogglePreview: { togglePreview(for: item) },
                     actions: previewActions(for: item),
+                    selectedActionID: showsActionDetails ? selectedPreviewActionID : nil,
                     processDetail: item.pid.flatMap { processModel.details[$0] },
                     processCPU: item.pid.flatMap { processModel.cpu[$0] },
-                    measuringCPU: item.pid.map { processModel.measuringCPU.contains($0) } ?? false,
-                    onOpenPath: { path, isFolder in openFromPreview(path, isFolder: isFolder) }
+                    measuringCPU: item.pid.map { processModel.measuringCPU.contains($0) } ?? false
                 )
                 .id(item.id)
             }
         }
-        .background(QuickLookSourceAnchor())
         // Changing rows swaps the preview content IMMEDIATELY (like the legacy launcher): cross-fading
-        // two files makes their text overlap. The sliding selection bar is enough.
+        // two selections makes their text overlap. The sliding selection bar is enough.
         .animation(nil, value: previewItem?.id)
     }
 
@@ -629,33 +592,21 @@ struct SpotlightLauncherView: View {
         let next = options[(current + step + options.count) % options.count]
         if next == .process {
             filter = nil
-            // A Lumio tab replaces a search tag chip (GitHub, YouTube…): never both at once.
-            withAnimation(motion(SpotlightMotion.chip)) { scope = nil; tagStack = []; browse = .process }
+            withAnimation(motion(SpotlightMotion.chip)) { scope = nil; tag = nil; browse = .process }
         } else {
             if inProcessTab { leaveProcessTab() }
             filter = next
         }
     }
 
-    /// `~/Clients/Acme` or `/Volumes/Work/` typed in the field, when it is a folder.
-    private static func typedFolder(_ text: String) -> String? {
-        guard text.hasPrefix("/") || text.hasPrefix("~") else { return nil }
-        let path = (text as NSString).expandingTildeInPath
-        return isDirectory(path) ? (path as NSString).standardizingPath : nil
-    }
-
-    private static func isDirectory(_ path: String) -> Bool {
-        var isDir: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
-    }
-
     /// Opens a tab with text in the field (for example, from `lumio <mode>`).
     private func openTab(_ tab: SpotlightKind?, text: String) {
         withAnimation(motion(SpotlightMotion.chip)) {
             scope = nil
+            selectedPreviewActionID = nil
             activeCommand = nil
             filter = nil
-            if tab != nil { tagStack = [] }  // a Lumio tab replaces a search tag chip
+            tag = nil
             browse = tab
         }
         query = text
@@ -756,7 +707,7 @@ struct SpotlightLauncherView: View {
     /// Typed words to show in bold in `item`'s title (Fluent Search-style).
     private func highlightWords(for item: SpotlightItem) -> [String] {
         guard scope == nil, activeCommand == nil,
-              [.app, .doc, .folder, .url, .tab, .setting].contains(item.kind)
+              [.app, .folder, .url, .tab, .setting].contains(item.kind)
         else { return [] }
         // The text these rows were found for, not the live field: a keystroke then leaves the
         // rows alone (they skip their body) until its own results land, and stale rows never
@@ -773,18 +724,20 @@ struct SpotlightLauncherView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(-1)
-            Text("esc close")
+            Text(selectedPreviewActionID == nil ? "esc close" : "esc back")
                 .fixedSize()
             Spacer(minLength: 8)
-            if !results.isEmpty {
+            if !showsActionDetails, !results.isEmpty {
                 Text("\(results.count) \(results.count == 1 ? "result" : "results")")
                     .fixedSize()
             }
-            if sortMode != .relevance {
+            if !showsActionDetails, sortMode != .relevance {
                 Text("by \(sortMode.label.lowercased())")
                     .fixedSize()
             }
-            FooterIconButton(symbol: "arrow.up.arrow.down", help: "Sort results  ⌥S") { showSortMenu() }
+            if !showsActionDetails {
+                FooterIconButton(symbol: "arrow.up.arrow.down", help: "Sort results  ⌥S") { showSortMenu() }
+            }
         }
         .font(.system(size: 12.5))
         .foregroundStyle(.tertiary)
@@ -798,11 +751,12 @@ struct SpotlightLauncherView: View {
     }
 
     private var footerHint: String {
+        if showsActionDetails { return "↑↓ choose action   ⏎ run" }
+        if showsFinderResults { return "↑↓ select   ⏎ open in Finder   ⌘T open in Terminal" }
         if scope != nil { return "↑↓ select   ⏎ run action" }
-        if let tag, tag.isFileTag { return "↑↓ select   ⏎ open   ⇥ add a tag (pdf, image…)   ⌫ leave" }
-        if let tag { return "↑↓ select   ⏎ search \(tag.name)   ⌫ leave tag" }
+        if tag != nil { return "↑↓ select   ⏎ open   ⌫ leave tag" }
         if showingSuggestions, query.isEmpty, browse == nil {
-            return "Recent   ↑↓ select   ⏎ open   yt ⇥ search tags   ⌥T all tags"
+            return "Recent   ↑↓ select   ⏎ open   ⌥T all tags"
         }
         switch activeCommand {
         case Self.tagsCommand: return "↑↓ select   ⏎ use tag   ⌫ leave"
@@ -811,11 +765,7 @@ struct SpotlightLauncherView: View {
         default: break
         }
         let mode = browse.map { SpotlightMode.forTab($0, query: query) ?? .search } ?? SpotlightMode.parse(query)
-        var hint = "↑↓ select   " + mode.footerHint
-        if mode == .search, let combo = SpotlightQuickLook.shortcut {
-            hint += "   \(combo.display) quick look"
-        }
-        return hint
+        return "↑↓ select   " + mode.footerHint
     }
 
     // MARK: - Toast
@@ -827,7 +777,7 @@ struct SpotlightLauncherView: View {
                 .font(.system(size: 14.5, weight: .medium))
                 .padding(.horizontal, 18)
                 .padding(.vertical, 11)
-                .spotlightGlass(Capsule(), in: glassSpace, isDark: isDark)
+                .spotlightSurface(Capsule(), isDark: isDark)
                 .frame(width: Metric.panelWidth)
                 .transition(.offset(y: -12).combined(with: .opacity))
         }
@@ -850,11 +800,20 @@ struct SpotlightLauncherView: View {
     private func refresh() {
         searchTask?.cancel()
         searchTask = nil
-        fileTask?.cancel()
-        fileTask = nil
-        // Has text: the 4 round buttons merge back into the bar immediately, without waiting for results.
+        extrasTask?.cancel()
+        extrasTask = nil
+        // Bring the quick buttons back into the bar as soon as there is input.
         pokeIdle()
 
+        if selectedPreviewActionID != nil {
+            showingSuggestions = false
+            if showsFinderResults {
+                refreshResults(SpotlightRequest(text: query, browse: .folder))
+            } else if !expanded {
+                setExpanded(true)
+            }
+            return
+        }
         if let scope {
             publish(SpotlightBackend.actionRows(for: scope, filter: query))
             return
@@ -869,6 +828,18 @@ struct SpotlightLauncherView: View {
             }
             return
         }
+        let launch = SpotlightMode.tab(fromLaunchQuery: query)
+        if browse == nil, tag == nil, let argument = FolderAddressQuery.changeDirectoryArgument(in: query) {
+            if argument.isEmpty {
+                publish([SpotlightItem(
+                    id: "cd|hint", name: "Type a directory after cd", kind: .help,
+                    colors: "#a7aeb8,#5e6670", symbol: "folder"
+                )])
+            } else {
+                refreshResults(SpotlightRequest(text: argument, browse: .folder))
+            }
+            return
+        }
         if let tag {
             refreshTag(tag)
             return
@@ -879,7 +850,9 @@ struct SpotlightLauncherView: View {
         }
         if browse == nil, refreshMode(SpotlightMode.parse(query)) { return }
 
-        let request = SpotlightRequest(text: query, browse: browse)
+        let request = launch.tab == .folder && browse == nil
+            ? SpotlightRequest(text: launch.text, browse: .folder)
+            : SpotlightRequest(text: query, browse: browse)
         guard !request.isEmpty else {
             if suggestionsEnabled, isOpen {
                 refreshSuggestions()
@@ -892,103 +865,91 @@ struct SpotlightLauncherView: View {
             return
         }
         showingSuggestions = false
+        refreshResults(request)
+    }
 
-        let engineQuery = SpotlightBackend.engineQuery(for: request)
-        // First keystroke (panel not expanded yet) searches immediately; further typing waits a short beat.
+    private func refreshResults(_ request: SpotlightRequest) {
+        showingSuggestions = false
+        let term = request.term
+        let allowsFolders = request.browse == nil || request.browse == .folder
+        let excludedFolders = themeStore.excludedFolderPaths
+        if allowsFolders, FolderAddressQuery.isLiteralAddress(term) {
+            publish(SpotlightBackend.directFolder(for: term, excluding: excludedFolders).map { [$0] } ?? [])
+            return
+        }
+        // First keystroke searches immediately; further typing waits a short beat.
         let debounce: Duration = expanded ? SpotlightBackend.debounce : .zero
         searchTask = Task { @MainActor in
             if debounce > .zero {
                 try? await Task.sleep(for: debounce)
                 guard !Task.isCancelled else { return }
             }
-            // The core holds the engine read lock while searching: run off the main thread.
-            let wantsURLs = request.browse == nil && request.term.count >= 2
-            let urlQuery = request.term
-            let urlLimit = AppConstants.Launcher.WebURL.recentLimit
-            // Second pass, started NOW so it runs alongside the core search: files from anywhere
-            // on the Mac (Spotlight), bookmarks and history (read like a browser extension would).
-            let wantsExtras = request.browse == nil && urlQuery.count >= 3 && !urlQuery.hasPrefix(":")
-                && !urlQuery.hasPrefix(">")
-            let skippedFolders = themeStore.excludedFolderPaths
-            // Spotlight answers on its own queue (see SpotlightQueue), the browsers are read meanwhile.
-            let extrasTask: Task<SpotlightBackend.Extras, Never>? = wantsExtras
+            // Explicit web addresses stay directly openable; other slash-separated input
+            // goes unchanged to the directory matcher.
+            let relativePath = allowsFolders && term.contains("/") && !term.hasPrefix(">")
+                && !term.lowercased().hasPrefix(AppConstants.Launcher.QueryPrefix.apps)
+                && (request.browse == .folder || EngineBridge.shared.classifyURL(query: term) == nil)
+            let coreRequest = relativePath ? SpotlightRequest(text: term, browse: .folder) : request
+            let engineQuery = SpotlightBackend.engineQuery(for: coreRequest)
+            let wantsBrowserRows = coreRequest.browse == nil && term.count >= 2
+            let wantsBookmarks = wantsBrowserRows && term.count >= 3 && !term.hasPrefix(">")
+            let wantsFolders = allowsFolders && !relativePath && !term.contains("/") && !term.contains("\"")
+                && !term.hasPrefix(">") && (coreRequest.browse == .folder || term.count >= 3)
+            let lookup: Task<SpotlightBackend.Extras, Never>? = wantsBookmarks || wantsFolders
                 ? Task.detached(priority: .userInitiated) {
-                    async let files = SpotlightFiles.search(term: urlQuery, scope: nil, limit: 25, excluding: skippedFolders)
-                    let bookmarks = BrowserBookmarks.search(urlQuery, limit: 2)
-                    let history = BrowserHistory.search(urlQuery, limit: 3)
-                    let blocked = BrowserHistory.isBlocked()
+                    let bookmarks = wantsBookmarks ? BrowserBookmarks.search(term, limit: 2) : []
+                    let history = wantsBookmarks ? BrowserHistory.search(term, limit: 3) : []
+                    let folders = wantsFolders ? await SpotlightFolders.search(
+                        term: term, scope: nil, limit: 25, excluding: excludedFolders
+                    ) : []
                     return SpotlightBackend.Extras(
-                        files: await files, bookmarks: bookmarks, history: history, blocked: blocked
+                        folders: folders, bookmarks: bookmarks, history: history,
+                        blocked: wantsBookmarks && BrowserHistory.isBlocked()
                     )
                 } : nil
-            // Web suggestions are the only network call: fetched on their own, never awaited
-            // by the file results.
-            let suggestionsTask: Task<[String], Never>? = wantsExtras && webSuggestMode == .always
-                ? Task.detached(priority: .utility) { await WebSuggestions.fetch(urlQuery, youtube: false, limit: 3) }
-                : nil
-            let (found, recents, tabs, windows) = await Task.detached(priority: .userInitiated) {
+            let (found, tabs, windows) = await Task.detached(priority: .userInitiated) {
                 let found = EngineBridge.shared.search(query: engineQuery.text, limit: engineQuery.limit)
-                let recents = wantsURLs
-                    ? EngineBridge.shared.recentURLs(query: urlQuery, limit: urlLimit)
+                let tabs = wantsBrowserRows
+                    ? BrowserTabs.shared.search(term, limit: SpotlightBackend.tabLimit)
                     : []
-                let tabs = wantsURLs
-                    ? BrowserTabs.shared.search(urlQuery, limit: SpotlightBackend.tabLimit)
+                let windows = wantsBrowserRows && term.count >= 3
+                    ? OpenWindows.shared.search(term, limit: 3, skipping: { BrowserTabs.isBrowser(appPath: $0) })
                     : []
-                // Windows of other apps (a browser's are already listed tab by tab).
-                let windows = wantsURLs && urlQuery.count >= 3
-                    ? OpenWindows.shared.search(urlQuery, limit: 3, skipping: { BrowserTabs.isBrowser(appPath: $0) })
-                    : []
-                return (found, recents, tabs, windows)
+                return (found, tabs, windows)
             }.value
-            // Text changed while waiting: these results are stale, and so is the second pass.
-            // Cancelling it drops its Spotlight query if that hasn't started yet.
             guard !Task.isCancelled else {
-                extrasTask?.cancel()
-                suggestionsTask?.cancel()
+                lookup?.cancel()
+                return
+            }
+            let initial = SpotlightBackend.rows(from: found, for: coreRequest, tabs: tabs, windows: windows)
+            if coreRequest.browse == .folder, let lookup {
+                let extras = await withTaskCancellationHandler {
+                    await lookup.value
+                } onCancel: {
+                    lookup.cancel()
+                }
+                guard !Task.isCancelled else { return }
+                searchTask = nil
+                publish(SpotlightBackend.addingExtras(extras, term: term, to: initial))
                 return
             }
             searchTask = nil
-            publish(SpotlightBackend.rows(from: found, for: request, recentURLs: recents, tabs: tabs, windows: windows))
-            guard let extrasTask else { return }
-            fileTask = Task { @MainActor in
+            publish(initial)
+            guard let lookup, !dismissing else {
+                lookup?.cancel()
+                return
+            }
+            extrasTask = Task { @MainActor in
                 await withTaskCancellationHandler {
-                    let extras = await extrasTask.value
+                    let extras = await lookup.value
                     guard !Task.isCancelled else { return }
-                    republish(SpotlightBackend.addingExtras(extras, term: urlQuery, to: all))
-                    if let suggestionsTask {
-                        let suggestions = await suggestionsTask.value
-                        guard !Task.isCancelled else { return }
-                        republish(SpotlightBackend.addingSuggestions(suggestions, to: all))
-                    }
-                    fileTask = nil
+                    republish(SpotlightBackend.addingExtras(extras, term: term, to: all))
+                    extrasTask = nil
                 } onCancel: {
-                    // `refresh()` cancels this task on the next keystroke: pass it on.
-                    extrasTask.cancel()
-                    suggestionsTask?.cancel()
+                    lookup.cancel()
                 }
             }
         }
-    }
-
-    /// A file or folder clicked in the preview's folder listing: open it, remember the pick
-    /// for this text like any other result, and close the launcher.
-    private func openFromPreview(_ path: String, isFolder: Bool) {
-        guard FileManager.default.fileExists(atPath: path) else {
-            toast("This item no longer exists")
-            return
-        }
-        if isFolder {
-            FileManagerApp.openFolder(path)
-        } else {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
-        }
-        if tagStack.isEmpty, browse == nil {
-            UsageLearning.shared.record(SpotlightItem(
-                id: "file|" + path, name: (path as NSString).lastPathComponent, kind: isFolder ? .folder : .doc,
-                meta: PathDisplay.directory(of: path), target: path, iconPath: path
-            ), query: query)
-        }
-        hide(restore: false, launched: true)
     }
 
     /// Closes the launcher and opens the Settings window.
@@ -1005,30 +966,47 @@ struct SpotlightLauncherView: View {
         keepSelOnPublish = nil
     }
 
-    /// Search tag active: the site search row, its open tabs and recently visited pages.
+    /// Show the local results for the active tag.
     private func refreshTag(_ tag: SearchTag) {
         showingSuggestions = false
+        if tag.folders?.folders.isEmpty == true {
+            refreshResults(SpotlightRequest(text: query, browse: .folder))
+            return
+        }
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let debounce: Duration = expanded ? SpotlightBackend.debounce : .zero
+        let excludedFolders = themeStore.excludedFolderPaths
         searchTask = Task { @MainActor in
             if debounce > .zero {
                 try? await Task.sleep(for: debounce)
                 guard !Task.isCancelled else { return }
             }
-            if let scope = tag.files {
-                // File tag: files from anywhere on the Mac in that folder / of that kind.
-                let hits = await SpotlightFiles.search(
-                    term: term, scope: scope, limit: SpotlightBackend.resultLimit, excluding: themeStore.excludedFolderPaths
-                )
+            if let folderScope = tag.folders {
+                let rows: [SpotlightItem]
+                if FolderAddressQuery.isLiteralAddress(term) {
+                    rows = SpotlightBackend.directFolder(for: term, excluding: excludedFolders).map { [$0] } ?? []
+                } else if term.contains("/") {
+                    let request = SpotlightRequest(text: term, browse: .folder)
+                    let engineQuery = SpotlightBackend.engineQuery(for: request)
+                    let found = await Task.detached(priority: .userInitiated) {
+                        EngineBridge.shared.search(query: engineQuery.text, limit: engineQuery.limit)
+                    }.value
+                    rows = SpotlightBackend.rows(from: found, for: request).filter { item in
+                        guard let path = item.target else { return false }
+                        return folderScope.folders.isEmpty || folderScope.folders.contains { scopePath in
+                            let prefix = (scopePath as NSString).standardizingPath
+                            return path != prefix && path.hasPrefix(prefix.hasSuffix("/") ? prefix : prefix + "/")
+                        }
+                    }
+                } else {
+                    let folders = await SpotlightFolders.search(
+                        term: term, scope: folderScope, limit: SpotlightBackend.resultLimit, excluding: excludedFolders
+                    )
+                    rows = SpotlightBackend.folderRows(folders)
+                }
                 guard !Task.isCancelled else { return }
                 searchTask = nil
-                let rows = SpotlightBackend.fileRows(hits)
-                publish(rows.isEmpty ? [SpotlightItem(
-                    id: "tag|empty",
-                    name: scope.contentSearch && term.isEmpty ? "Type a word to search inside your files"
-                        : term.isEmpty ? "Nothing here yet" : "No files match “\(term)”",
-                    kind: .help, colors: "#a7aeb8,#5e6670", meta: tag.name, symbol: tag.symbol
-                )] : rows)
+                publish(rows)
                 return
             }
             if tag.windows {
@@ -1095,7 +1073,7 @@ struct SpotlightLauncherView: View {
                 publish(rows.isEmpty ? [SpotlightItem(
                     id: "tag|empty", name: term.isEmpty ? "Nothing found in your browsers" : "Nothing matches “\(term)”",
                     kind: .help, colors: "#a7aeb8,#5e6670",
-                    meta: "Chrome, Edge, Brave, Arc, Vivaldi · Safari needs Full Disk Access", symbol: tag.symbol
+                    meta: "Chrome, Edge, Brave, Arc and Vivaldi", symbol: tag.symbol
                 )] : rows)
                 return
             }
@@ -1105,42 +1083,30 @@ struct SpotlightLauncherView: View {
             }.value
             guard !Task.isCancelled else { return }
             searchTask = nil
-            publish(SpotlightBackend.tagRows(tag: tag, term: term, tabs: tabs, history: history))
-            // Then search suggestions for the site, like the browser's address bar.
-            guard !term.isEmpty, webSuggestMode != .off else { return }
-            let youtube = tag.domain?.contains("youtube.com") ?? false
-            fileTask = Task { @MainActor in
-                let suggestions = await WebSuggestions.fetch(term, youtube: youtube)
-                guard !Task.isCancelled, !suggestions.isEmpty else { return }
-                fileTask = nil
-                var rows = all
-                let shown = Set(rows.map { $0.name.lowercased() })
-                let extra = SpotlightBackend.suggestionRows(
-                    suggestions.filter { !shown.contains($0.lowercased()) }, tag: tag)
-                rows.insert(contentsOf: extra, at: min(1, rows.count))
-                keepSelOnPublish = sel
-                publish(rows)
-                keepSelOnPublish = nil
-            }
+            publish(SpotlightBackend.tagRows(tag: tag, tabs: tabs, history: history))
         }
     }
 
-    /// Empty field (Fluent-style): recently used apps and files, so ⏎ often opens what you want
+    /// Empty field: recently used apps and pins, so ⏎ can open a result
     /// before you type. Off with `suggestions_on_open=false`.
     private func refreshSuggestions() {
         searchTask = Task { @MainActor in
-            let recent = await RecentItems.recent(apps: 5, files: 9)
+            let recent = await RecentItems.recent(limit: 5)
             guard !Task.isCancelled else { return }
             searchTask = nil
             // Your pins first, then what you use most, without repeating a pinned item.
             let pinned = pins.items.filter { item in
                 guard let target = item.target, target.hasPrefix("/") else { return true }
+                if item.kind == .folder {
+                    return SpotlightBackend.isBrowsableFolder(at: URL(fileURLWithPath: target),
+                                                            excluding: themeStore.excludedFolderPaths)
+                }
                 return FileManager.default.fileExists(atPath: target)
             }
             let pinnedTargets = Set(pinned.compactMap { $0.target?.lowercased() })
-            let suggested = SpotlightBackend.suggestionRows(apps: recent.apps, files: recent.files)
+            let suggested = SpotlightBackend.suggestionRows(apps: recent)
                 .filter { !pinnedTargets.contains(($0.target ?? "").lowercased()) }
-            let rows = (pinned + suggested).filter { !isSkippedFileRow($0) }
+            let rows = pinned + suggested
             guard !rows.isEmpty else {
                 showingSuggestions = false
                 if expanded { setExpanded(false) }
@@ -1151,89 +1117,60 @@ struct SpotlightLauncherView: View {
         }
     }
 
-    /// What Tab would turn into a search tag right now, and the text that stays in the field:
-    ///   `yt cats` / `cats yt`   → YouTube + "cats" (keyword first or last)
-    ///   `downloads`, `pdf`      → file tags; a second one stacks (`downloads` ⇥ `pdf` ⇥)
-    ///   `~/Clients/Acme`        → that folder
-    ///   a "press Tab" hint row  → its tag (typed `yout`)
-    ///   the selected result     → what it belongs to, like Fluent Search: a folder → inside it,
-    ///                             a file → its parent folder, a link / tab / history page → that
-    ///                             website, a browser app → your bookmarks and history
-    /// nil when nothing applies (Tab then cycles the filter pills).
+    /// Selects a tag from an exact keyword, a hint, or the current result.
     private func tagCandidate(keyword: String? = nil) -> (tag: SearchTag, rest: String)? {
-        guard scope == nil, activeCommand == nil, !inProcessTab else { return nil }
+        guard scope == nil, activeCommand == nil, !inProcessTab, tag == nil else { return nil }
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        // Nothing typed: Tab only cycles Lumio's own pills, never a Fluent-style tag
-        // from the selected result.
-        if keyword == nil, trimmed.isEmpty { return nil }
-        var found: (SearchTag, String)?
-        if let keyword {
-            if let named = SearchTags.tag(forKeyword: keyword) {
-                // `cats yt` with the YouTube hint picked: keep "cats".
-                let split = SearchTags.split(trimmed)
-                found = (named, split?.tag.keyword == named.keyword ? split?.rest ?? "" : "")
-            }
-        } else if let path = Self.typedFolder(trimmed) {
-            found = (.folder(path), "")
-        } else if let split = SearchTags.split(trimmed) {
-            found = (split.tag, split.rest)
-        } else if tagStack.isEmpty, let hint = results.first(where: { $0.kind == .tagHint }),
-                  let named = hint.payload.flatMap(SearchTags.tag(forKeyword:))
-        {
-            found = (named, "")
-        } else if expanded, sel < results.count, let context = Self.contextTag(for: results[sel]) {
-            // Narrowing to the selected result's home keeps the text for a folder you typed
-            // towards ("downl" → Downloads starts clean), and clears it otherwise.
-            found = (context, "")
+        if let keyword, let named = SearchTags.tag(forKeyword: keyword) {
+            let split = SearchTags.split(trimmed)
+            return (named, split?.tag.keyword == named.keyword ? split?.rest ?? "" : "")
         }
-        guard let found else { return nil }
-        // Lumio's launcher tabs and web tags do not stack.
-        if !tagStack.isEmpty, found.0.mode != nil || tag?.stacked(with: found.0) == nil { return nil }
-        // The same tag twice does nothing.
-        if tagStack.contains(where: { $0.keyword == found.0.keyword }) { return nil }
-        return found
+        guard !trimmed.isEmpty else { return nil }
+        if let split = SearchTags.split(trimmed) { return split }
+        if expanded, sel < results.count, results[sel].kind == .tagHint,
+           let hint = results[sel].payload,
+           let named = SearchTags.tag(forKeyword: hint)
+        {
+            return (named, "")
+        }
+        if expanded, sel < results.count, let context = Self.contextTag(for: results[sel]) {
+            return (context, "")
+        }
+        return nil
     }
 
-    /// The search tag a result belongs to (Fluent's "press TAB to search in …").
+    /// The local browser results associated with the selected item.
     private static func contextTag(for item: SpotlightItem) -> SearchTag? {
         switch item.kind {
         case .folder:
-            guard let path = item.target, isDirectory(path) else { return nil }
-            return .folder(path)
-        case .doc:
-            // Fluent: "press TAB to search for psd files". The folder is ⌘R (Search in Parent Folder).
-            guard let path = item.target, path.hasPrefix("/") else { return nil }
-            let ext = (path as NSString).pathExtension.lowercased()
-            return ext.isEmpty ? .folder((path as NSString).deletingLastPathComponent) : SearchTags.extensionTag(ext)
+            return item.target.map(SearchTag.folder)
         case .tab, .url:
             guard let target = item.tab?.url ?? item.target,
                   let host = URLComponents(string: target)?.host, target.hasPrefix("http")
             else { return nil }
             return .site(host)
-        case .app:
-            guard let path = item.target, path.hasPrefix("/") else { return nil }
-            if BrowserTabs.isBrowser(appPath: path) { return SearchTags.tag(forKeyword: "browser") }
-            // Any other app: the files it opens (Photoshop → your PSDs), newest first.
-            return AppDocuments.tag(forApp: path)
         default:
             return nil
         }
     }
 
-    /// "press TAB to search in Downloads", shown at the end of the bar.
+    private static func isFinder(_ item: SpotlightItem) -> Bool {
+        item.kind == .app && item.target == AppConstants.Launcher.Finder.appPath
+    }
+
     private var tabHint: String? {
-        guard expanded, isOpen, !isHome, let candidate = tagCandidate() else { return nil }
-        // Kept short: it shares the bar with the text being typed.
-        var name = candidate.tag.name
-        if name.count > 24 { name = String(name.prefix(23)) + "…" }
-        if candidate.tag.mode != nil { return "press TAB for \(name)" }
-        if candidate.tag.keyword.hasPrefix("app:") { return "press TAB for its files" }
-        if let files = candidate.tag.files, files.folders.isEmpty, files.extensions.count == 1,
-           candidate.tag.keyword == files.extensions[0]
-        {
-            return "press TAB to search for \(files.extensions[0]) files"
+        guard expanded, isOpen, scope == nil else { return nil }
+        if let item = previewItem, Self.isFinder(item) { return "press TAB for Finder" }
+        if let candidate = tagCandidate() {
+            var name = candidate.tag.name
+            if name.count > 24 { name = String(name.prefix(23)) + "…" }
+            if candidate.tag.mode != nil { return "press TAB for \(name)" }
+            return "press TAB to filter by \(name)"
         }
-        return "press TAB to search in \(name)"
+        if let item = previewItem, item.kind == .app, !previewActions(for: item).isEmpty {
+            return "press TAB for details"
+        }
+        return nil
     }
 
     /// Tab (or ⏎ on a hint row): lock the tag in as a chip. False when nothing applies.
@@ -1248,16 +1185,16 @@ struct SpotlightLauncherView: View {
         return true
     }
 
-    /// Adds `found` as a chip and leaves `rest` as the text.
     private func lockTag(_ found: SearchTag, rest: String) {
         withAnimation(motion(SpotlightMotion.chip)) {
             filter = nil
             browse = nil
-            tagStack.append(found)
+            scope = nil
+            selectedPreviewActionID = nil
+            tag = found
         }
         query = rest
-        if !found.isFileTag {
-            // Fresh tab list for this site; redraw if it changed meanwhile.
+        if found.domain != nil {
             BrowserTabs.shared.refresh(minInterval: 0.5) {
                 if isOpen, !dismissing, tag != nil { refresh() }
             }
@@ -1265,9 +1202,7 @@ struct SpotlightLauncherView: View {
         focusField()
     }
 
-    // MARK: - Quick actions (preview pane)
-
-    // MARK: - Pinning, rename, delete, Open With, preview toggle
+    // MARK: - Quick actions
 
     private func pinAction(for item: SpotlightItem) -> PreviewAction {
         let pinned = pins.isPinned(item)
@@ -1288,121 +1223,16 @@ struct SpotlightLauncherView: View {
         }
     }
 
-    /// ⌥P / the eye button: details card ↔ preview, remembered per kind.
-    private func togglePreview(for item: SpotlightItem) {
-        if item.kind == .folder { previewFolders.toggle() } else { previewFiles.toggle() }
-    }
-
-    /// Rename… : a small native prompt with the current name.
-    private func rename(_ item: SpotlightItem, path: String) {
-        let alert = NSAlert()
-        alert.messageText = "Rename “\(item.name)”"
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        field.stringValue = item.name
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        // Select the name without its extension, like Finder.
-        DispatchQueue.main.async {
-            let stem = (item.name as NSString).deletingPathExtension
-            field.currentEditor()?.selectedRange = NSRange(location: 0, length: (stem as NSString).length)
-        }
-        guard alert.runModal() == .alertFirstButtonReturn else { focusField(); return }
-        let newName = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newName.isEmpty, newName != item.name, !newName.contains("/") else { focusField(); return }
-        let destination = ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(newName)
-        do {
-            try FileManager.default.moveItem(atPath: path, toPath: destination)
-            toast("Renamed to \(newName)")
-            Task.detached(priority: .utility) { _ = EngineBridge.shared.requestIndexRefresh() }
-            // The row still shows the old name: search again.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { refresh() }
-        } catch {
-            toast("Couldn't rename: \(error.localizedDescription)")
-        }
-        focusField()
-    }
-
-    private func deletePermanently(_ item: SpotlightItem, path: String) {
-        do {
-            try FileManager.default.removeItem(atPath: path)
-            toast("Deleted \(item.name)")
-            all.removeAll { $0.id == item.id }
-            sel = min(sel, max(results.count - 1, 0))
-            Task.detached(priority: .utility) { _ = EngineBridge.shared.requestIndexRefresh() }
-        } catch {
-            toast("Couldn't delete: \(error.localizedDescription)")
-        }
-    }
-
-    /// Open With… : a menu of the apps that can open the file, the default one first.
-    private func showOpenWithMenu(for path: String) {
-        let fileURL = URL(fileURLWithPath: path)
-        let apps = NSWorkspace.shared.urlsForApplications(toOpen: fileURL)
-        guard !apps.isEmpty else { toast("No app can open this file"); return }
-        let menu = NSMenu()
-        let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: fileURL)
-        for app in apps.prefix(14) {
-            let name = FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: "")
-            let entry = MenuActionTarget.item(app == defaultApp ? "\(name) (default)" : name) {
-                let config = NSWorkspace.OpenConfiguration()
-                config.activates = true
-                NSWorkspace.shared.open([fileURL], withApplicationAt: app, configuration: config) { _, _ in }
-                hide(restore: false, launched: true)
-            }
-            let icon = NSWorkspace.shared.icon(forFile: app.path)
-            icon.size = NSSize(width: 16, height: 16)
-            entry.image = icon
-            menu.addItem(entry)
-        }
-        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-    }
-
     /// Tag chips for the detail card, like Fluent Search's: click one to narrow to it.
     private func previewChips(for item: SpotlightItem) -> [PreviewChip] {
-        // Read so the late default-app chip (PreviewFacts) re-renders the pane.
-        _ = previewFactsTick
-        guard scope == nil, activeCommand == nil else { return [] }
+        guard scope == nil || selectedPreviewActionID != nil, activeCommand == nil else { return [] }
         func lock(_ tag: SearchTag?) {
-            guard let tag else { return }
-            // Start a fresh scope from the chip rather than stacking onto whatever is active.
-            withAnimation(motion(SpotlightMotion.chip)) { tagStack = [] }
-            lockTag(tag, rest: "")
+            if let tag { lockTag(tag, rest: "") }
         }
         switch item.kind {
-        case .doc, .folder:
-            guard item.isFileTarget, let path = item.target else { return [] }
-            var chips: [PreviewChip] = []
-            let isFolder = item.kind == .folder
-            chips.append(PreviewChip(id: "kind", label: isFolder ? "folder" : "file", symbol: isFolder ? "folder" : "doc") {
-                lock(SearchTags.tag(forKeyword: isFolder ? "folder" : "file"))
-            })
-            let ext = (path as NSString).pathExtension.lowercased()
-            if !isFolder, !ext.isEmpty {
-                chips.append(PreviewChip(id: "ext", label: "." + ext, symbol: "square.on.square") {
-                    lock(SearchTags.extensionTag(ext))
-                })
-            }
-            let parent = (path as NSString).deletingLastPathComponent
-            chips.append(PreviewChip(
-                id: "parent", label: PreviewFacts.displayName(isFolder ? path : parent), symbol: "folder"
-            ) { lock(.folder(isFolder ? path : parent)) })
-            if isFolder {
-                chips.append(PreviewChip(id: "in", label: PreviewFacts.displayName(parent), symbol: "arrow.turn.left.up") {
-                    lock(.folder(parent))
-                })
-            } else if let app = PreviewFacts.defaultApp(for: path, onLoad: { previewFactsTick &+= 1 }) {
-                // The app that opens it: jump to that app's result. Looked up off the main
-                // thread; the chip shows up one render later the first time.
-                let name = PreviewFacts.displayName(app.path).replacingOccurrences(of: ".app", with: "")
-                chips.append(PreviewChip(id: "app", label: name, appPath: app.path) {
-                    withAnimation(motion(SpotlightMotion.chip)) { tagStack = [] }
-                    query = name
-                    focusField()
-                })
-            }
-            return chips
+        case .folder:
+            guard let path = item.target else { return [] }
+            return [PreviewChip(id: "folder", label: "Subfolders", symbol: "folder") { lock(.folder(path)) }]
         case .url, .tab:
             guard let link = item.tab?.url ?? item.target, let host = URLComponents(string: link)?.host else { return [] }
             var chips = [PreviewChip(id: "site", label: FaviconStore.normalize(host), symbol: "globe") { lock(.site(host)) }]
@@ -1421,7 +1251,6 @@ struct SpotlightLauncherView: View {
             return chips
         case .app:
             return [PreviewChip(id: "apps", label: "apps", symbol: "square.grid.2x2") {
-                withAnimation(motion(SpotlightMotion.chip)) { tagStack = [] }
                 openTab(.app, text: "")
             }]
         default:
@@ -1432,7 +1261,7 @@ struct SpotlightLauncherView: View {
     /// The actions listed in the preview pane for `item`, like Fluent Search's result actions:
     /// the first is what ⏎ does.
     private func previewActions(for item: SpotlightItem) -> [PreviewAction] {
-        guard scope == nil, activeCommand == nil else { return [] }
+        guard scope == nil || selectedPreviewActionID != nil, activeCommand == nil else { return [] }
         let manager = FileManagerApp.name
         func finish(_ outcome: SpotlightOpener.Outcome) {
             switch outcome {
@@ -1440,11 +1269,10 @@ struct SpotlightLauncherView: View {
             case .message(let text): toast(text)
             }
         }
-        let open = PreviewAction(id: "open", label: "Open", symbol: "arrow.up.forward.app", shortcut: "⏎") { run(item) }
-
         switch item.kind {
         case .app:
-            guard let path = item.target, path.hasPrefix("/") else { return [] }
+            guard let path = item.target, path.hasPrefix("/"),
+                  !BrowserOpening.isBlockedApplication(URL(fileURLWithPath: path)) else { return [] }
             let running = PreviewFacts.isRunning(path)
             var list = [PreviewAction(
                 id: "open", label: running ? "Switch to App" : "Open",
@@ -1474,14 +1302,6 @@ struct SpotlightLauncherView: View {
                 })
             }
             list.append(pinAction(for: item))
-            if AppDocuments.tag(forApp: path) != nil {
-                list.append(PreviewAction(id: "files", label: "Search Its Files", symbol: "doc.on.doc", shortcut: "⇥") {
-                    if let files = AppDocuments.tag(forApp: path) {
-                        withAnimation(motion(SpotlightMotion.chip)) { tagStack = [] }
-                        lockTag(files, rest: "")
-                    }
-                })
-            }
             if PreviewFacts.canUninstall(path) {
                 list.append(PreviewAction(id: "uninstall", label: "Uninstall…", symbol: "trash") {
                     if SpotlightOpener.runningApp(at: path) != nil {
@@ -1509,45 +1329,26 @@ struct SpotlightLauncherView: View {
                 },
             ]
 
-        case .doc, .folder:
-            guard item.isFileTarget, let path = item.target else { return [] }
-            let isFolder = item.kind == .folder
-            let inside = isFolder ? path : (path as NSString).deletingLastPathComponent
-            // Fluent Search's file actions, in its order, with the Mac shortcut for each.
-            var list = [open]
-            list.append(PreviewAction(id: "reveal", label: "Show in \(manager)", short: "Show", symbol: "folder", shortcut: "⌘F") {
-                finish(SpotlightOpener.perform(.reveal, on: item))
-            })
-            list.append(PreviewAction(
-                id: "search", label: isFolder ? "Search Inside" : "Search in Parent Folder", short: "Search",
-                symbol: "magnifyingglass", shortcut: "⌘R"
-            ) { lockTag(.folder(inside), rest: "") })
-            list.append(PreviewAction(id: "terminal", label: "Open in Terminal", short: "Terminal", symbol: "terminal", shortcut: "⌘T") {
-                _ = performLocal(.openInTerminal, on: item)
-            })
-            if !isFolder {
-                list.append(PreviewAction(id: "openwith", label: "Open With…", short: "Open With", symbol: "arrow.up.forward.square") {
-                    showOpenWithMenu(for: path)
-                })
-                list.append(PreviewAction(id: "edit", label: "Open in Editor", short: "Edit", symbol: "pencil", shortcut: "⌘E") {
-                    _ = performLocal(.openInEditor, on: item)
-                })
-            }
-            list.append(PreviewAction(id: "rename", label: "Rename…", symbol: "character.cursor.ibeam") { rename(item, path: path) })
-            list.append(pinAction(for: item))
-            if SpotlightBackend.trashAction(for: item) == .moveToTrash {
-                list.append(PreviewAction(id: "trash", label: "Move to Trash", symbol: "trash", shortcut: "⌘D") {
-                    _ = performLocal(.moveToTrash, on: item)
-                })
-                list.append(PreviewAction(id: "delete", label: "Delete Permanently", symbol: "minus.circle") {
-                    confirm("delete|\(path)", prompt: "Click Delete Permanently again: \(item.name) can't be recovered") {
-                        deletePermanently(item, path: path)
-                    }
-                })
-            }
-            return list
+        case .folder:
+            guard let path = item.target else { return [] }
+            return [
+                PreviewAction(
+                    id: "open", label: opensInFinder(for: query) ? "Open in Finder" : "Open Folder",
+                    symbol: "folder", shortcut: "⏎"
+                ) { run(item) },
+                PreviewAction(id: "terminal", label: "Open in Terminal", symbol: "terminal", shortcut: "⌘T") {
+                    openFolderInTerminal(path)
+                },
+                PreviewAction(id: "reveal", label: "Show in \(manager)", symbol: "arrow.up.forward.app", shortcut: "⌘F") {
+                    finish(SpotlightOpener.perform(.reveal, on: item))
+                },
+                PreviewAction(id: "subfolders", label: "Browse Subfolders", symbol: "folder.badge.plus", shortcut: "⇥") {
+                    lockTag(.folder(path), rest: "")
+                },
+                pinAction(for: item),
+            ]
 
-        case .url, .tab, .web:
+        case .url, .tab:
             guard let link = item.tab?.url ?? item.target, link.hasPrefix("http") else { return [] }
             var list = [PreviewAction(
                 id: "open", label: item.kind == .tab ? "Switch to Tab" : "Open",
@@ -1559,8 +1360,8 @@ struct SpotlightLauncherView: View {
                 focusField()
             })
             if PinStore.target(of: item) != nil { list.append(pinAction(for: item)) }
-            if item.kind != .web, let host = URLComponents(string: link)?.host, tagStack.isEmpty {
-                list.append(PreviewAction(id: "site", label: "Search This Site", symbol: "magnifyingglass", shortcut: "⇥") {
+            if let host = URLComponents(string: link)?.host, tag == nil {
+                list.append(PreviewAction(id: "site", label: "Filter Browsed Pages", symbol: "globe", shortcut: "⇥") {
                     lockTag(.site(host), rest: "")
                 })
             }
@@ -1595,6 +1396,7 @@ struct SpotlightLauncherView: View {
         scopeReturnQuery = ""
         withAnimation(motion(SpotlightMotion.chip)) {
             scope = nil
+            selectedPreviewActionID = nil
             browse = nil
             activeCommand = id
             query = args
@@ -1646,15 +1448,15 @@ struct SpotlightLauncherView: View {
         }
     }
 
-    /// Actions that need launcher state (confirmation, async tool run). `false` = not one of them.
+    /// Actions that need launcher state for confirmation.
     private func performLocal(_ action: SpotlightAction, on item: SpotlightItem) -> Bool {
         switch action {
-        case .openInEditor:
-            runTool(AppConstants.Launcher.Tools.editAction, on: item)
-        case .openInTerminal:
-            runTool(AppConstants.Launcher.Tools.terminalAction, on: item)
         case .moveToTrash:
-            guard let path = item.target else { return true }
+            guard item.kind == .app, let path = item.target, PreviewFacts.canUninstall(path) else { return true }
+            guard SpotlightOpener.runningApp(at: path) == nil else {
+                toast("Quit \(item.name) first, then uninstall it")
+                return true
+            }
             confirm("trash|\(path)", prompt: "⏎ again to move \(item.name) to the Trash") {
                 moveToTrash(item, path: path)
             }
@@ -1672,37 +1474,12 @@ struct SpotlightLauncherView: View {
         return true
     }
 
-    /// ⌘E / ⌘T / ⌘D / ⌘⇧H on the selected row (or the item whose actions are open).
-    private func performShortcut(_ action: SpotlightAction) {
-        guard let item = previewItem else { return }
-        let allowed: Bool = switch action {
-        case .openInEditor, .openInTerminal: item.isFileTarget
-        case .moveToTrash, .emptyTrash: SpotlightBackend.trashAction(for: item) == action
-        case .excludeApp: item.kind == .app && item.target != nil
-        default: false
-        }
-        guard allowed else {
-            toast(action == .excludeApp ? "Select an app to hide" : "Not available for \(item.name)")
+    private func hideSelectedApp() {
+        guard let item = previewItem, item.kind == .app, item.target != nil else {
+            toast("Select an app to hide")
             return
         }
-        _ = performLocal(action, on: item)
-    }
-
-    private func runTool(_ action: String, on item: SpotlightItem) {
-        guard item.isFileTarget, let path = item.target else {
-            toast("Select a file or folder")
-            return
-        }
-        let candidateID = item.candidateID ?? item.id
-        let isDirectory = item.kind == .folder
-        Task { @MainActor in
-            switch await ToolLauncher.run(
-                action, candidateID: candidateID, title: item.name, path: path, isDirectory: isDirectory
-            ) {
-            case .launched: hide(restore: false, launched: true)
-            case .message(let text): toast(text)
-            }
-        }
+        _ = performLocal(.excludeApp, on: item)
     }
 
     private func moveToTrash(_ item: SpotlightItem, path: String) {
@@ -1717,6 +1494,16 @@ struct SpotlightLauncherView: View {
             all.removeAll { $0.id == item.id }
             sel = min(sel, max(results.count - 1, 0))
         }
+    }
+
+    private func openFolderInTerminal(_ path: String) {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard SpotlightBackend.isBrowsableFolder(at: url, excluding: themeStore.excludedFolderPaths),
+              FileManagerApp.openInTerminal(path) else {
+            toast("Couldn't open this folder in Terminal")
+            return
+        }
+        hide(restore: false, launched: true)
     }
 
     private func emptyTrash() {
@@ -1755,13 +1542,7 @@ struct SpotlightLauncherView: View {
         SearchTags.reload()
         FileManagerApp.reload()
         suggestionsEnabled = RecentItems.isEnabled
-        webSuggestMode = WebSuggestions.mode
-        ExternalDrives.isEnabled = LauncherConfigFile.value(ExternalDrives.configKey).map {
-            !["false", "0", "no", "off"].contains($0.lowercased())
-        } ?? true
-        // The core re-walks every indexed folder here (seconds). On the main thread that froze
-        // the whole app, and every Settings toggle triggers it. Searches keep using the
-        // previous index meanwhile.
+        // Rebuild the app index off the main thread.
         Task { @MainActor in
             let backendReloaded = await EngineBridge.shared.reloadConfigInBackground()
             guard isOpen, !dismissing else { return }
@@ -1806,14 +1587,14 @@ struct SpotlightLauncherView: View {
     /// tag, or close it when that tag is what is showing. `browse` opens the tag browser.
     private func openTagFromHotKey(_ keyword: String) {
         let wantsBrowser = keyword == "browse"
-        let showing = wantsBrowser ? activeCommand == Self.tagsCommand : tagStack.map(\.keyword) == [keyword]
+        let showing = wantsBrowser ? activeCommand == Self.tagsCommand : tag?.keyword == keyword
         if isOpen, !dismissing, NSApp.isActive, showing, scope == nil {
             hide()
             return
         }
         // A hotkey asks for this tag: don't bring back the search from last time.
         keptQuery = ""
-        keptTags = []
+        keptTag = nil
         keptBrowse = nil
         show()
         if wantsBrowser {
@@ -1826,10 +1607,11 @@ struct SpotlightLauncherView: View {
         }
         withAnimation(motion(SpotlightMotion.chip)) {
             scope = nil
+            selectedPreviewActionID = nil
             activeCommand = nil
             browse = nil
             filter = nil
-            tagStack = [found]
+            tag = found
         }
         query = ""
         focusField()
@@ -1837,7 +1619,7 @@ struct SpotlightLauncherView: View {
 
     /// ⌥T: every search tag in one list; type to filter, ⏎ or ⇥ to use one.
     private func openTagBrowser() {
-        withAnimation(motion(SpotlightMotion.chip)) { tagStack = [] }
+        withAnimation(motion(SpotlightMotion.chip)) { tag = nil }
         enterCommand(Self.tagsCommand)
     }
 
@@ -1858,16 +1640,8 @@ struct SpotlightLauncherView: View {
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
-    private func isSkippedFileRow(_ item: SpotlightItem) -> Bool {
-        guard item.kind == .doc || item.kind == .folder,
-              let path = item.target else { return false }
-        return FileSearchPaths.isExcluded(path, by: themeStore.excludedFolderPaths)
-    }
-
     /// Shows the results. Expands the panel if it isn't already.
-    private func publish(_ candidates: [SpotlightItem]) {
-        // Cached index rows, pins and learned picks can outlive a config change.
-        let rows = candidates.filter { !isSkippedFileRow($0) }
+    private func publish(_ rows: [SpotlightItem]) {
         // The first results after the panel opens rise in one by one (SpotlightRiseIn). Later
         // ones, while typing, swap with a short spring: rows that stay slide to their new place,
         // new rows fade in, dropped rows vanish. Swapping instantly made the list flicker.
@@ -1891,7 +1665,7 @@ struct SpotlightLauncherView: View {
 
     private func setExpanded(_ open: Bool) {
         if open {
-            // The 4 round buttons are still merging into the bar: wait for the bar to grow before dropping
+            // The quick buttons are still merging into the bar: wait for the bar to grow before dropping
             // the panel, so results fall straight down instead of sweeping diagonally.
             let sinceMerge = Date().timeIntervalSince(mergeStartedAt)
             let delay = reduceMotion ? 0 : max(0, SpotlightMotion.expandAfterMerge - sinceMerge)
@@ -1901,7 +1675,7 @@ struct SpotlightLauncherView: View {
         withAnimation(motion(SpotlightMotion.resize)) { expanded = open }
     }
 
-    /// After the field is empty for a while the 4 round buttons split off; with content they merge back.
+    /// Show the quick buttons after the search bar has been idle.
     private func pokeIdle() {
         idleTask?.cancel()
         // Suggestions fill the empty field instead of the round buttons (Fluent-style).
@@ -1926,6 +1700,13 @@ struct SpotlightLauncherView: View {
     }
 
     private func move(_ delta: Int) {
+        if showsActionDetails, let item = scope, let selectedPreviewActionID {
+            let actions = previewActions(for: item)
+            guard !actions.isEmpty else { return }
+            let current = actions.firstIndex(where: { $0.id == selectedPreviewActionID }) ?? 0
+            self.selectedPreviewActionID = actions[(current + delta + actions.count) % actions.count].id
+            return
+        }
         guard expanded, !results.isEmpty else { return }
         // The selection bar SLIDES to the new row (like the legacy launcher) instead of jumping.
         let next = (sel + delta + results.count) % results.count
@@ -1937,6 +1718,11 @@ struct SpotlightLauncherView: View {
 
     /// Enter.
     private func activate() {
+        if showsActionDetails, let item = scope, let selectedPreviewActionID {
+            let actions = previewActions(for: item)
+            (actions.first { $0.id == selectedPreviewActionID } ?? actions.first)?.run()
+            return
+        }
         // Idle with a round button focused by Tab: open that one.
         if idle, let index = quickFocus, Self.quickItems.indices.contains(index) {
             quickFocus = nil
@@ -2049,21 +1835,46 @@ struct SpotlightLauncherView: View {
             return
         }
         let outcome = if let action = item.action, let scope {
-            SpotlightOpener.perform(action, on: scope)
+            if action == .open && scope.kind == .folder && opensInFinder(for: scopeReturnQuery) {
+                SpotlightOpener.open(scope, inFinder: true)
+            } else {
+                SpotlightOpener.perform(action, on: scope)
+            }
         } else {
-            SpotlightOpener.open(item)
+            SpotlightOpener.open(item, inFinder: item.kind == .folder && opensInFinder(for: query))
         }
         switch outcome {
         case .launched:
             // Learn the pick for this text (normal searches only): it comes first next time.
             if item.action == nil, tag == nil, browse == nil {
-                UsageLearning.shared.record(item, query: query)
+                UsageLearning.shared.record(item, query: showsActionDetails ? scopeReturnQuery : query)
             }
             // The just-opened app comes to the front by itself: don't return focus to the previous app.
             hide(restore: false, launched: true)
         case .message(let text):
             toast(text)
         }
+    }
+
+    private func opensInFinder(for text: String) -> Bool {
+        isFinderPage || (browse == nil && tag == nil && FolderAddressQuery.changeDirectoryArgument(in: text) != nil)
+    }
+
+    /// Opens the selected application's details and usable actions as a separate page.
+    @discardableResult
+    private func enterActionPage() -> Bool {
+        guard expanded, scope == nil, activeCommand == nil,
+              sel < results.count, results[sel].kind == .app else { return false }
+        let item = results[sel]
+        guard let firstAction = previewActions(for: item).first else { return false }
+        scopeReturnQuery = query
+        withAnimation(motion(SpotlightMotion.chip)) {
+            scope = item
+            selectedPreviewActionID = firstAction.id
+            query = ""
+        }
+        if Self.isFinder(item) { focusField() }
+        return true
     }
 
     /// ⌘K: view the actions of the selected row.
@@ -2082,8 +1893,9 @@ struct SpotlightLauncherView: View {
     private func toggleBrowse(_ kind: SpotlightKind) {
         withAnimation(motion(SpotlightMotion.chip)) {
             scope = nil
+            selectedPreviewActionID = nil
             browse = (browse == kind) ? nil : kind
-            if browse != nil { tagStack = [] }  // a Lumio tab replaces a search tag chip
+            if browse != nil { tag = nil }
         }
         focusField()
     }
@@ -2093,24 +1905,29 @@ struct SpotlightLauncherView: View {
         withAnimation(motion(SpotlightMotion.chip)) {
             if scope != nil {
                 scope = nil
+                selectedPreviewActionID = nil
                 query = scopeReturnQuery
                 scopeReturnQuery = ""
             } else if activeCommand != nil {
                 activeCommand = nil
                 query = ""
-            } else if !tagStack.isEmpty {
-                // ⌫ removes the last tag only (`downloads` `.pdf` → `downloads`).
-                tagStack.removeLast()
+            } else if tag != nil {
+                tag = nil
                 query = ""
             } else {
                 browse = nil
             }
         }
+        focusField()
     }
 
     /// Escape closes the launcher from any tab or search.
     /// ⌫ on an empty field still leaves the mode without closing.
     private func handleEscape() {
+        if selectedPreviewActionID != nil {
+            exitChip()
+            return
+        }
         // Esc first drops the Tab focus on a round button, then closes.
         if quickFocus != nil {
             quickFocus = nil
@@ -2126,32 +1943,9 @@ struct SpotlightLauncherView: View {
         return true
     }
 
-    /// Keys while the Quick Look panel is key: ⌘Y / Space close it, ↑ / ↓ move the
-    /// launcher's selection and Quick Look follows (like Finder). The rest is Quick Look's.
-    private func handleQuickLookKey(_ event: NSEvent) -> Bool {
-        typealias KeyCode = AppConstants.Launcher.KeyCode
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        let shiftReturn = flags == .shift
-            && (event.keyCode == KeyCode.returnKey || event.keyCode == KeyCode.keypadEnter)
-        if SpotlightQuickLook.matchesShortcut(event) || (flags.isEmpty && key == " ") || shiftReturn {
-            SpotlightQuickLook.close()
-            return true
-        }
-        if flags.isEmpty, event.keyCode == KeyCode.arrowUp || event.keyCode == KeyCode.arrowDown {
-            move(event.keyCode == KeyCode.arrowUp ? -1 : 1)
-            if sel < results.count { SpotlightQuickLook.follow(item: results[sel]) }
-            return true
-        }
-        return false
-    }
-
     /// Navigation keys, called from SpotlightKeyMonitor. `true` = handled.
     private func handleKey(_ event: NSEvent) -> Bool {
         typealias KeyCode = AppConstants.Launcher.KeyCode
-        if isOpen, !dismissing, event.window is QLPreviewPanel {
-            return handleQuickLookKey(event)
-        }
         guard isOpen, !dismissing, event.window is LauncherPanelWindow else { return false }
         // The input method has uncommitted text: the key belongs to the input method.
         if let editor = event.window?.firstResponder as? NSTextView, editor.hasMarkedText() {
@@ -2159,6 +1953,13 @@ struct SpotlightLauncherView: View {
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        // The details page handles Enter even when the search field is hidden.
+        if showsActionDetails, flags.isEmpty,
+           event.keyCode == KeyCode.returnKey || event.keyCode == KeyCode.keypadEnter {
+            activate()
+            return true
+        }
 
         switch event.keyCode {
         case KeyCode.escape:
@@ -2175,8 +1976,15 @@ struct SpotlightLauncherView: View {
             if sel < results.count { run(results[sel]) }
             return true
         case KeyCode.tab:
-            // `yt` + Tab → YouTube search tag. Otherwise Tab cycles the filter pills as before.
+            if selectedPreviewActionID != nil {
+                exitChip()
+                return true
+            }
+            if !flags.contains(.shift), let item = previewItem, Self.isFinder(item), enterActionPage() {
+                return true
+            }
             if !flags.contains(.shift), enterTag() { return true }
+            if !flags.contains(.shift), enterActionPage() { return true }
             // Idle (the round buttons are out): Tab walks field → buttons → field, Enter opens one.
             if idle, query.isEmpty {
                 let stops = Self.quickItems.count + 1  // + the field itself
@@ -2185,6 +1993,8 @@ struct SpotlightLauncherView: View {
                 quickFocus = next == 0 ? nil : next - 1
                 return true
             }
+            // A primary Tab only enters a real scope when a result is selected.
+            if !flags.contains(.shift), expanded, sel < results.count { return true }
             cycleFilter(flags.contains(.shift) ? -1 : 1)
             return true
         case Self.backspaceKeyCode where flags.isEmpty:
@@ -2197,12 +2007,7 @@ struct SpotlightLauncherView: View {
             move(key == "n" ? 1 : -1)
             return true
         }
-        // ⇧⏎: the separate preview window (Fluent's Shift+Return); the same key closes it.
-        if flags == .shift, event.keyCode == KeyCode.returnKey || event.keyCode == KeyCode.keypadEnter {
-            if let item = previewItem { SpotlightQuickLook.toggle(item: item) }
-            return true
-        }
-        // ⌥S: next sort order (Default → Name → Date modified → File size → Type).
+        // ⌥S: switch between relevance and name order.
         if flags == .option, event.keyCode == 1 {
             let modes = ResultSort.allCases
             setSort(modes[((modes.firstIndex(of: sortMode) ?? 0) + 1) % modes.count])
@@ -2218,19 +2023,9 @@ struct SpotlightLauncherView: View {
             enterScope()
             return true
         }
-        // ⌥P: details card ↔ preview for the selected file or folder (Fluent's Alt+P).
-        if flags == .option, event.keyCode == 35, let item = previewItem {
-            togglePreview(for: item)
-            return true
-        }
         // ⌘⇧P: pin / unpin the selected result to Home.
         if flags == [.command, .shift], key == "p", let item = previewItem {
             toggleHomePin(item)
-            return true
-        }
-        // ⌘R: Search in Parent Folder (a folder: search inside it).
-        if flags == .command, key == "r", let item = previewItem, item.isFileTarget, let path = item.target {
-            lockTag(.folder(item.kind == .folder ? path : (path as NSString).deletingLastPathComponent), rest: "")
             return true
         }
         if flags == .command, key == "/" {
@@ -2242,32 +2037,16 @@ struct SpotlightLauncherView: View {
             return true
         }
         if flags == [.command, .shift], key == "h" {
-            performShortcut(.excludeApp)
+            hideSelectedApp()
             return true
         }
-        if flags == .command, key == "e" || key == "t" {
-            performShortcut(key == "e" ? .openInEditor : .openInTerminal)
-            return true
-        }
-        if flags == .command, key == "d", let item = previewItem {
-            performShortcut(SpotlightBackend.trashAction(for: item) ?? .moveToTrash)
-            return true
-        }
-        // Quick Look the selected row, like Finder (⌘Y unless changed in Settings ▸ Shortcuts).
-        if SpotlightQuickLook.matchesShortcut(event) {
-            if let item = previewItem { SpotlightQuickLook.toggle(item: item) }
-            return true
-        }
-        // ⌘↩ — search the web for the typed text (like the legacy launcher).
-        if flags == .command, event.keyCode == KeyCode.returnKey || event.keyCode == KeyCode.keypadEnter {
-            let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !term.isEmpty else { return true }
-            run(SpotlightItem(id: "web|\(term)", name: term, kind: .web))
+        if flags == .command, key == "t", let item = previewItem, item.kind == .folder, let path = item.target {
+            openFolderInTerminal(path)
             return true
         }
         // ⌘F — show the selected item in Finder (like the legacy launcher).
         if flags == .command, key == "f", let item = previewItem,
-           item.target?.hasPrefix("/") == true
+           [.app, .folder].contains(item.kind), item.target?.hasPrefix("/") == true
         {
             switch SpotlightOpener.perform(.reveal, on: item) {
             case .launched: hide(restore: false, launched: true)
@@ -2317,6 +2096,8 @@ struct SpotlightLauncherView: View {
             toastTask?.cancel()
             searchTask?.cancel()
             searchTask = nil
+            extrasTask?.cancel()
+            extrasTask = nil
             activateWhenReady = false
             query = ""
             shownQuery = ""
@@ -2324,11 +2105,11 @@ struct SpotlightLauncherView: View {
             sel = 0
             filter = nil
             sortMode = .relevance
-            ResultSort.forget()
             scope = nil
+            selectedPreviewActionID = nil
             scopeReturnQuery = ""
             browse = nil
-            tagStack = []
+            tag = nil
             showingSuggestions = false
             expanded = false
             idle = false
@@ -2398,21 +2179,14 @@ struct SpotlightLauncherView: View {
             }
             // The permission worked and macOS now says no: find out whether it went stale.
             AccessibilityDoctor.shared.noticeIfLost()
-            SpotlightFiles.setLowPriority(fromConfig: LauncherConfigFile.value(SpotlightFiles.lowPriorityConfigKey))
-            SpotlightBackend.setExtraWebRows(fromConfig: LauncherConfigFile.value(SpotlightBackend.extraWebRowsKey))
             suggestionsEnabled = RecentItems.isEnabled
-            webSuggestMode = WebSuggestions.mode
-            ExternalDrives.isEnabled = LauncherConfigFile.value(ExternalDrives.configKey).map {
-                !["false", "0", "no", "off"].contains($0.lowercased())
-            } ?? true
             // Which apps are running, for the dot on their rows.
             runningApps = Set(NSWorkspace.shared.runningApplications
                 .filter { $0.activationPolicy == .regular }
                 .compactMap { $0.bundleURL?.resolvingSymlinksInPath().path })
-            // Pick up new bookmark folders / browser search engines: read off the main thread,
+            // Pick up new bookmark folders off the main thread,
             // so the first keystroke never waits on the browsers' files.
             Task.detached(priority: .utility) {
-                BrowserKeywords.warm()
                 BrowserBookmarks.warm()
                 await MainActor.run { SearchTags.reload() }
             }
@@ -2424,18 +2198,16 @@ struct SpotlightLauncherView: View {
             if keptBrowse == nil,
                QueryRetentionPolicy.shouldClear(hiddenAt: hiddenAt, seconds: retentionSeconds) {
                 keptQuery = ""
-                keptTags = []
+                keptTag = nil
             }
             hiddenAt = nil
             if let tab = keptBrowse {
                 browse = tab
                 keptBrowse = nil
             }
-            // Tags before the text, so the search that the text starts already has its scope.
-            if !keptTags.isEmpty {
-                tagStack = keptTags
-                keptTags = []
-            }
+            // Restore the tag before the text so the query runs in the right scope.
+            tag = keptTag
+            keptTag = nil
             restoredQuery = nil
             if !keptQuery.isEmpty {
                 query = keptQuery
@@ -2477,8 +2249,6 @@ struct SpotlightLauncherView: View {
         dismissing = true
         idleTask?.cancel()
         isFocused = false
-        // Quick Look belongs to the launcher: don't leave it floating on its own.
-        SpotlightQuickLook.close()
 
         if launched {
             withAnimation(motion(SpotlightMotion.launch)) {
@@ -2504,7 +2274,7 @@ struct SpotlightLauncherView: View {
         let keepable = !launched && scope == nil && activeCommand == nil
         keptBrowse = keepable ? browse : nil
         keptQuery = keepable ? query : ""
-        keptTags = keepable && browse == nil ? tagStack : []
+        keptTag = keepable && browse == nil ? tag : nil
 
         let seconds = launched ? SpotlightMotion.launchSeconds : SpotlightMotion.dismissSeconds
         dismissTask = Task { @MainActor in
@@ -2628,7 +2398,6 @@ struct SpotlightTile: View {
     let size: CGFloat
 
     @ObservedObject private var favicons = FaviconStore.shared
-    @ObservedObject private var thumbnails = ThumbnailStore.shared
 
     var body: some View {
         if let host = item.favicon, let icon = favicons.image(for: host) {
@@ -2644,18 +2413,6 @@ struct SpotlightTile: View {
                     in: RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
                 )
                 .frame(width: size, height: size)
-        } else if let path = item.target, item.kind.isDocument, ThumbnailStore.wants(path),
-                  let picture = thumbnails.image(for: path)
-        {
-            // What the file looks like (image, video, PSD, PDF), like Finder.
-            Image(nsImage: picture)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: size * 0.12, style: .continuous))
-                .frame(width: size, height: size)
-                // A faint plate, so a dark or part-transparent picture still reads as a tile.
-                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: size * 0.16, style: .continuous))
         } else if let image = realImage {
             Image(nsImage: image)
                 .resizable()
@@ -2667,7 +2424,7 @@ struct SpotlightTile: View {
         }
     }
 
-    /// Real icon for an app, file, folder or process. Cached: NSWorkspace returns a new image on every call; without caching the
+    /// Real icon for an app or process. Cached: NSWorkspace returns a new image on every call; without caching the
     /// icon flickers on every keystroke.
     private var realImage: NSImage? {
         if item.kind == .process, let pid = item.pid {
@@ -2678,7 +2435,7 @@ struct SpotlightTile: View {
         return item.iconPath.map { RowIconCache.icon(forFile: $0) }
     }
 
-    /// Colored tile for rows with no real file (web, actions, sample data).
+    /// Colored tile for rows without an app or site icon.
     private var colorTile: some View {
         let pair = item.colors.split(separator: ",").map(String.init)
         let c1 = Color(hex: pair.first ?? "#9aa2ad")
@@ -2755,9 +2512,7 @@ struct SpotlightResultList {
     }
 }
 
-/// `results` re-sorted for the sort menu (name, date, size, type). The launcher reads `results`
-/// dozens of times per render, and re-sorting on each read (with a disk read per file the first
-/// time) made typing lag while a sort was chosen.
+/// Caches the sorted rows until the results or the sort order changes.
 final class SortedResultsMemo {
     private var version = -1
     private var mode = ResultSort.relevance
@@ -2772,8 +2527,7 @@ final class SortedResultsMemo {
     }
 }
 
-/// Lets a result be dragged out of the launcher: a file / folder / app as a file (drop it into
-/// Photoshop, Finder, a chat…), a link as a URL.
+/// Lets an application, folder or link be dragged out of the launcher.
 private struct SpotlightDragSource: ViewModifier {
     let item: SpotlightItem
 
@@ -2788,7 +2542,7 @@ private struct SpotlightDragSource: ViewModifier {
     }
 
     private static func fileURL(_ item: SpotlightItem) -> URL? {
-        guard [.doc, .folder, .app].contains(item.kind),
+        guard [.app, .folder].contains(item.kind),
               let path = item.target, path.hasPrefix("/")
         else { return nil }
         return URL(fileURLWithPath: path)

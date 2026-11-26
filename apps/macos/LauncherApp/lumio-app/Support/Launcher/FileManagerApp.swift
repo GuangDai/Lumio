@@ -2,7 +2,7 @@
 //  FileManagerApp.swift
 //  lumio-app
 //
-//  Which app opens folders and shows files ("Show in Finder", ⌘F). Finder by default, but
+//  Which app opens folders and reveals results ("Show in Finder", ⌘F). Finder by default, but
 //  any third-party file manager works (Path Finder, ForkLift, QSpace, Commander One…).
 //
 //  ~/.lumio/config:
@@ -37,27 +37,37 @@ enum FileManagerApp {
     /// "Finder", "Path Finder"…, for labels ("Show in Path Finder").
     static var name: String { current.name }
 
-    /// The chosen app, nil when it is Finder.
-    static var appURL: URL? { current.appURL }
-
     static func reload() { resolved = nil }
 
-    /// Opens a folder in the chosen file manager.
-    static func openFolder(_ path: String) {
+    /// Opens a folder in the configured manager, or explicitly in Finder.
+    static func openFolder(_ path: String, inFinder: Bool = false) {
         let url = URL(fileURLWithPath: path, isDirectory: true)
+        let finderURL = URL(fileURLWithPath: AppConstants.Launcher.Finder.appPath, isDirectory: true)
+        let manager = inFinder ? finderURL : current.appURL ?? finderURL
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
-        if let app = current.appURL {
-            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config) { _, error in
-                // The app refused or vanished: fall back to Finder rather than doing nothing.
-                if error != nil { DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
+        NSWorkspace.shared.open([url], withApplicationAt: manager, configuration: config) { _, error in
+            if error != nil, manager != finderURL {
+                DispatchQueue.main.async { Self.openFolder(path, inFinder: true) }
             }
-        } else {
-            NSWorkspace.shared.open(url, configuration: config) { _, _ in }
         }
     }
 
-    /// Shows a file or folder selected in its parent folder.
+    @discardableResult
+    static func openInTerminal(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue,
+              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
+        else { return false }
+
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.open([URL(fileURLWithPath: path, isDirectory: true)],
+                                withApplicationAt: terminal, configuration: config, completionHandler: nil)
+        return true
+    }
+
+    /// Shows an app or folder selected in its parent folder.
     static func reveal(_ path: String) {
         let url = URL(fileURLWithPath: path)
         let state = current
@@ -88,10 +98,12 @@ enum FileManagerApp {
         }
         // Whatever is set in the config but not in the list (a bundle id, a path).
         let current = choice
+        let customApp = findApp(current)
         if !out.contains(where: { $0.1.caseInsensitiveCompare(current) == .orderedSame }),
-           !["", "auto", "system", "default", "finder", "com.apple.finder"].contains(current.lowercased())
+           !["", "auto", "system", "default", "finder", "com.apple.finder"].contains(current.lowercased()),
+           customApp.map(BrowserOpening.isBlockedApplication) != true
         {
-            out.append((findApp(current).map(appName) ?? current, current))
+            out.append((customApp.map(appName) ?? current, current))
         }
         return out
     }
@@ -124,7 +136,7 @@ enum FileManagerApp {
 
     private static func configValue() -> String {
         let raw = (try? String(contentsOfFile: ConfigPathResolver.resolvedPath(), encoding: .utf8)) ?? ""
-        return SearchTags.configLines(raw).last(where: { $0.0 == configKey })?.1 ?? "auto"
+        return ConfigFileLines.keyValues(raw)[configKey] ?? "auto"
     }
 
     private static let finder = Resolved(appURL: nil, name: "Finder", isSystemViewer: false)
@@ -139,7 +151,7 @@ enum FileManagerApp {
         case "finder", "com.apple.finder":
             return finder
         default:
-            guard let app = findApp(wanted) else { return finder }
+            guard let app = findApp(wanted), !BrowserOpening.isBlockedApplication(app) else { return finder }
             let same = viewer.map { $0.standardizedFileURL == app.standardizedFileURL } ?? false
             return Resolved(appURL: app, name: appName(app), isSystemViewer: same)
         }
@@ -152,7 +164,8 @@ enum FileManagerApp {
               id.lowercased() != "com.apple.finder",
               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
         else { return nil }
-        return outermostApp(url)
+        let app = outermostApp(url)
+        return BrowserOpening.isBlockedApplication(app) ? nil : app
     }
 
     /// App name, bundle id or path → app URL.

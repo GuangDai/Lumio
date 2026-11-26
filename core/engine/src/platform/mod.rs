@@ -57,6 +57,14 @@ pub(crate) fn discover_macos_installed_apps(
 #[cfg(target_os = "macos")]
 pub(crate) use macos::localized_settings_titles;
 
+#[cfg(target_os = "macos")]
+pub(crate) use macos::is_excluded_browser_app;
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn is_excluded_browser_app(_candidate: &lumio_indexing::Candidate) -> bool {
+    false
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn discover_linux_installed_apps(
     config: &crate::config::RuntimeConfig,
@@ -65,12 +73,12 @@ pub(crate) fn discover_linux_installed_apps(
     linux::discover_installed_apps(config, tx)
 }
 
-pub(crate) fn file_scan_root_suffixes() -> &'static [&'static str] {
-    platform_impl::FILE_SCAN_ROOT_SUFFIXES
-}
-
 pub(crate) fn settings_url_scheme_prefix() -> &'static str {
     platform_impl::SETTINGS_URL_SCHEME_PREFIX
+}
+
+pub(crate) fn folder_scan_root_suffixes() -> &'static [&'static str] {
+    platform_impl::FOLDER_SCAN_ROOT_SUFFIXES
 }
 
 pub(crate) fn settings_subtitle_prefix() -> &'static str {

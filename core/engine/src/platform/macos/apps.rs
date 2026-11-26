@@ -11,6 +11,7 @@ use std::sync::mpsc;
 /// Used when a bundle path has no readable file stem, which should not happen
 /// for a real `.app` but keeps the candidate from having an empty title.
 const FALLBACK_APP_NAME: &str = "App";
+const FINDER_BUNDLE_PATH: &str = "/System/Library/CoreServices/Finder.app";
 
 pub(crate) fn discover_installed_apps(config: &RuntimeConfig, tx: mpsc::SyncSender<Candidate>) {
     let mut bundles = Vec::new();
@@ -26,18 +27,66 @@ pub(crate) fn discover_installed_apps(config: &RuntimeConfig, tx: mpsc::SyncSend
             &mut bundles,
         );
     }
-
-    // Resolved in one batch rather than inline in the walk: each name costs an
-    // Info.plist read, and batching lets those run on a thread pool.
-    let localized = if config.localized_app_names {
-        macos::read_localized_display_names(&bundles, macos::APP_BUNDLE_EXTENSION)
-    } else {
-        vec![None; bundles.len()]
-    };
-
-    for (path, localized) in bundles.iter().zip(localized) {
-        emit_app(&tx, path, localized, &config.app_exclude_names);
+    // Finder lives above the CoreServices applications directory. Add its
+    // bundle explicitly to avoid indexing unrelated system helper apps there.
+    if Path::new(FINDER_BUNDLE_PATH).is_dir()
+        && !should_exclude_path(FINDER_BUNDLE_PATH, &config.app_exclude_paths)
+        && !bundles.iter().any(|path| path == FINDER_BUNDLE_PATH)
+    {
+        bundles.push(FINDER_BUNDLE_PATH.to_owned());
     }
+
+    emit_app_batch(
+        &tx,
+        &bundles,
+        config.localized_app_names,
+        &config.app_exclude_names,
+    );
+}
+
+fn emit_app_batch(
+    tx: &mpsc::SyncSender<Candidate>,
+    bundles: &[String],
+    localized_app_names: bool,
+    app_exclude_names: &[String],
+) {
+    // Batch the Info.plist reads for identity and optional localization.
+    let metadata = macos::read_app_bundle_metadata(bundles, localized_app_names);
+    for (path, metadata) in bundles.iter().zip(metadata) {
+        if metadata.as_ref().is_some_and(|bundle| bundle.is_safari) {
+            continue;
+        }
+        let localized = metadata.and_then(|bundle| bundle.localized_name);
+        emit_app(tx, path, localized, app_exclude_names);
+    }
+}
+
+/// Recheck cached rows as well as fresh discovery. Cached candidates have no
+/// stored bundle identifier and may point to renamed Safari app bundles.
+pub(crate) fn is_excluded_browser_app(candidate: &Candidate) -> bool {
+    if candidate.kind != CandidateKind::App {
+        return false;
+    }
+    let path = Path::new(candidate.path.as_ref());
+    if is_safari_app_name(candidate.title.as_ref())
+        || path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(is_safari_app_name)
+    {
+        return true;
+    }
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+    {
+        return false;
+    }
+    objc2::rc::autoreleasepool(|_| {
+        macos::load_bundle(candidate.path.as_ref())
+            .is_some_and(|bundle| macos::is_safari_bundle(&bundle))
+    })
 }
 
 fn emit_app(
@@ -166,18 +215,27 @@ fn should_exclude_app_name(name: &str, app_exclude_names: &[String]) -> bool {
 /// Excludes on either name: `app_exclude_names` is written by hand, so it
 /// holds whichever of the two the user happened to see in the launcher.
 fn should_exclude_app(title: &str, bundle_name: &str, app_exclude_names: &[String]) -> bool {
-    should_exclude_app_name(title, app_exclude_names)
+    is_safari_app_name(title)
+        || is_safari_app_name(bundle_name)
+        || should_exclude_app_name(title, app_exclude_names)
         || should_exclude_app_name(bundle_name, app_exclude_names)
+}
+
+fn is_safari_app_name(name: &str) -> bool {
+    matches!(
+        normalize_app_name(name).as_str(),
+        "safari" | "safari technology preview" | "safari for webkit development"
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_app_bundles, emit_app, merged_app_scan_roots, should_exclude_app,
-        should_exclude_app_name, should_exclude_path,
+        collect_app_bundles, emit_app, emit_app_batch, is_excluded_browser_app,
+        merged_app_scan_roots, should_exclude_app, should_exclude_app_name, should_exclude_path,
     };
     use crate::platform::macos::test_support::TempDir;
-    use lumio_indexing::Candidate;
+    use lumio_indexing::{Candidate, CandidateKind};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
@@ -205,9 +263,7 @@ mod tests {
         );
 
         let (tx, rx) = mpsc::sync_channel(16);
-        for path in &bundles {
-            emit_app(&tx, path, None, app_exclude_names);
-        }
+        emit_app_batch(&tx, &bundles, false, app_exclude_names);
         drop(tx);
         rx.into_iter().collect()
     }
@@ -316,6 +372,46 @@ mod tests {
         let apps = collect_apps_excluding(tmp.path(), &["Client Riot".to_string()]);
 
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn excludes_safari_variants_by_bundle_identity_after_renaming() {
+        let tmp = TempDir::new("exclude-safari");
+        for (index, identifier) in [
+            "com.apple.Safari",
+            "com.apple.SafariTechnologyPreview",
+            "com.apple.SafariForWebKitDevelopment",
+            "com.apple.Safari.WebApp.123",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let app = create_app(tmp.path(), &format!("Renamed {index}.app"));
+            fs::write(
+                app.join("Contents/Info.plist"),
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>{identifier}</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>"#
+                ),
+            )
+            .expect("write Safari fixture info plist");
+            let old_row = Candidate::new(
+                "app:cached-safari",
+                CandidateKind::App,
+                "Renamed Browser",
+                app.to_str().expect("UTF-8 app path"),
+            );
+            assert!(is_excluded_browser_app(&old_row));
+        }
+        create_app(tmp.path(), "Safari.app");
+        create_app(tmp.path(), "Terminal.app");
+
+        let apps = collect_apps(tmp.path());
+        let titles: Vec<_> = apps.iter().map(|app| app.title.as_ref()).collect();
+        assert_eq!(titles, vec!["Terminal"]);
     }
 
     /// The walk and the name resolution are separate passes zipped back

@@ -5,12 +5,11 @@
 //  Connects the Spotlight launcher to the Rust core (EngineBridge → bridge/ffi → QueryEngine).
 //
 //  Flow of a single search:
-//  1. `engineQuery(for:)` builds the query string for the core. The round buttons use the core's
-//     own filter prefixes: a" (app), d" (folder), f" (file). System settings are apps with a
-//     `setting:` id; they show under the Applications pill.
+//  1. `engineQuery(for:)` builds the query string for the core. The Applications and Folders
+//     buttons use its a" and d" prefixes. System settings have a `setting:` id.
 //  2. The view calls `EngineBridge.search` on a background thread (the core holds the engine read lock).
 //  3. `rows(from:for:)` turns the core's results into display rows, then adds the
-//     synthesized rows for URLs, system commands and web searches.
+//     synthesized rows for browser data, URLs, open windows and system commands.
 //
 
 import AppKit
@@ -48,8 +47,6 @@ enum SpotlightBackend {
             return SpotlightEngineQuery(text: "a\"" + term, limit: resultLimit + 20)
         case .folder:
             return SpotlightEngineQuery(text: "d\"" + term, limit: resultLimit)
-        case .doc:
-            return SpotlightEngineQuery(text: "f\"" + term, limit: resultLimit)
         default:
             return SpotlightEngineQuery(text: term, limit: resultLimit)
         }
@@ -60,7 +57,6 @@ enum SpotlightBackend {
     static func rows(
         from results: [LauncherResult],
         for request: SpotlightRequest,
-        recentURLs: [URLHistoryEntry] = [],
         tabs: [BrowserTab] = [],
         windows: [OpenWindow] = []
     ) -> [SpotlightItem] {
@@ -68,19 +64,11 @@ enum SpotlightBackend {
         if request.browse == nil, request.term.hasPrefix(">") {
             return [runRow(String(request.term.dropFirst()))]
         }
-        // Pinned rows go on top, except below a same-named app (Music.app stays ahead of ~/Music).
         var candidates = results.compactMap(item(from:))
-        for pin in pinned(for: request).reversed() {
-            let rival = candidates.firstIndex { $0.kind == .app && $0.name.lowercased() == pin.name.lowercased() }
-            candidates.insert(pin, at: rival.map { $0 + 1 } ?? 0)
-        }
-        // Code and config files sink below everything else (see SpotlightFiles.lowPriorityExtensions),
-        // unless the text names an extension ("align.ts").
-        if SpotlightFiles.parse(request.term).extensions.isEmpty {
-            let low = candidates.filter { $0.kind == .doc && SpotlightFiles.isLowPriority($0.name) }
-            if !low.isEmpty {
-                candidates = candidates.filter { !($0.kind == .doc && SpotlightFiles.isLowPriority($0.name)) } + low
-            }
+        for pin in quickRows(for: request).reversed() {
+            // A matching application should outrank a folder with the same name.
+            let app = candidates.firstIndex { $0.kind == .app && $0.name.lowercased() == pin.name.lowercased() }
+            candidates.insert(pin, at: app.map { $0 + 1 } ?? 0)
         }
         // What you opened before for text like this goes first (see UsageLearning).
         if request.browse == nil, !hasEnginePrefix(request.term) {
@@ -95,20 +83,15 @@ enum SpotlightBackend {
             if rows.count == resultLimit { break }
         }
 
-        // Synthesized rows only appear in a general search: not while browsing a group,
-        // or once a core filter prefix has been typed (a" f" d").
+        // Synthesized rows appear in general searches.
         let term = request.term
         guard request.browse == nil, !term.isEmpty, !hasEnginePrefix(term) else { return rows }
 
         var leading: [SpotlightItem] = []
-        // Bookmarks are already in memory, so they appear with the first results: after the
-        // top local results, or right above code / config files when those are all there is.
+        // Cached bookmarks appear after the first applications.
         if term.count >= 3 {
             let marks = bookmarkRows(BrowserBookmarks.search(term, limit: 2, cachedOnly: true))
-            if !marks.isEmpty {
-                let firstCode = rows.firstIndex { $0.kind == .doc && SpotlightFiles.isLowPriority($0.name) }
-                rows.insert(contentsOf: marks, at: min(firstCode ?? 4, 4, rows.count))
-            }
+            rows.insert(contentsOf: marks, at: min(4, rows.count))
         }
         // "settings", "lumio", "preferences": Lumio's own Settings window, under the best result.
         if isSettingsQuery(term) {
@@ -132,16 +115,6 @@ enum SpotlightBackend {
                 rows.insert(row, at: min(1, rows.count))
             }
         }
-        // Previously opened links matching the text, after the best result.
-        let liveURL = EngineBridge.shared.classifyURL(query: term)?.url
-        let recents = recentURLs.filter { $0.url != liveURL }.map { entry in
-            SpotlightItem(
-                id: "url|\(entry.url)", name: entry.url, kind: .url,
-                colors: "#8fb8ff,#3a6fd8", meta: "Recently opened",
-                target: entry.url, symbol: "clock.arrow.circlepath", favicon: FaviconStore.host(of: entry.url)
-            )
-        }
-        rows.insert(contentsOf: recents, at: min(1, rows.count))
         // Open browser tabs matching the text: ⏎ switches to the tab instead of opening a new one.
         let openTabs = tabs.map(item(from:))
         let openURLs = Set(tabs.map(\.url))
@@ -154,35 +127,11 @@ enum SpotlightBackend {
             let row = systemRow(command)
             if SystemCommands.isExact(term, command) { leading.append(row) } else { rows.insert(row, at: min(1, rows.count)) }
         }
-        // `yt`, `drive`…: a hint that Tab turns the text into a search tag. After the best result,
-        // so typing "g" + ⏎ still opens the top app.
+        // Local search tag hints sit after the best result.
         let rest = SearchTags.split(term)?.rest ?? ""
         let hints = SearchTags.suggestions(for: term).map { hintItem(for: $0, rest: rest) }
         rows.insert(contentsOf: hints, at: min(1, rows.count))
-        let web = SpotlightItem(
-            id: "web|\(term)", name: term, kind: .web,
-            colors: "#8fb8ff,#3a6fd8", meta: "Search the web", symbol: "globe", favicon: "google.com"
-        )
-        // More engines under "Search the web" (`web_search_rows=yt,bing`), like Fluent's rows.
-        let engines = extraWebTags.compactMap { tag -> SpotlightItem? in
-            guard let target = tag.url(for: term)?.absoluteString else { return nil }
-            return SpotlightItem(
-                id: "engine|\(tag.keyword)|\(term)", name: term, kind: .web, colors: tag.colors,
-                meta: "Search \(tag.name)", target: target, symbol: tag.symbol, favicon: tag.faviconHost
-            )
-        }
-        return leading + rows + [web] + engines
-    }
-
-    static let extraWebRowsKey = "web_search_rows"
-
-    /// Tags named in `web_search_rows`, read on each launcher open.
-    static var extraWebTags: [SearchTag] = []
-
-    static func setExtraWebRows(fromConfig value: String?) {
-        extraWebTags = (value ?? "").split(whereSeparator: { ", ;|".contains($0) })
-            .compactMap { SearchTags.tag(forKeyword: String($0)) }
-            .filter { $0.urlTemplate.contains("{query}") }
+        return leading + rows
     }
 
     static func runRow(_ text: String) -> SpotlightItem {
@@ -218,15 +167,14 @@ enum SpotlightBackend {
             .filter { seen.insert($0.name).inserted }
             .filter { needle.isEmpty || $0.keyword.contains(needle) || $0.name.lowercased().contains(needle) }
             .map { tag in
-                let what = tag.files != nil ? "Files"
-                    : tag.bookmarks != nil || tag.history ? "Browser"
-                    : tag.mode != nil ? "Lumio tab"
-                    : tag.settingsOnly ? "System Settings"
-                    : tag.windows ? "Windows" : "Web search"
+                let what = if tag.folders != nil { "Folders" }
+                    else if tag.settingsOnly { "System Settings" }
+                    else if tag.windows { "Windows" }
+                    else if tag.mode != nil { "Lumio tab" }
+                    else { "Browser" }
                 return SpotlightItem(
                     id: "taghint|\(tag.keyword)", name: tag.name, kind: .tagHint, colors: tag.colors,
-                    meta: "\(tag.keyword) ⇥  ·  \(what)", symbol: tag.symbol, payload: tag.keyword,
-                    favicon: tag.faviconHost
+                    meta: "\(tag.keyword) ⇥  ·  \(what)", symbol: tag.symbol, payload: tag.keyword
                 )
             }
     }
@@ -243,25 +191,17 @@ enum SpotlightBackend {
                 iconPath: systemSettingsAppPath, candidateID: result.id
             )
         case .app:
-            // /Applications/Safari.app… is a symlink into the system cryptex: take the icon
-            // from the real path, otherwise the icon gets an alias arrow.
-            let iconPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            // Use a symlink's real app icon without Finder's alias arrow.
+            let appURL = URL(fileURLWithPath: path)
+            guard !BrowserOpening.isBlockedApplication(appURL) else { return nil }
+            let iconPath = appURL.resolvingSymlinksInPath().path
             return SpotlightItem(
                 id: result.id, name: displayName(forApp: result.title), kind: .app,
                 target: path, iconPath: iconPath, candidateID: result.id
             )
-        case .file:
-            return SpotlightItem(
-                id: result.id, name: result.title, kind: .doc,
-                meta: PathDisplay.directory(of: path), target: path,
-                iconPath: path, candidateID: result.id
-            )
         case .folder:
-            return SpotlightItem(
-                id: result.id, name: result.title, kind: .folder,
-                meta: PathDisplay.directory(of: path), target: path,
-                iconPath: path, candidateID: result.id
-            )
+            guard path.hasPrefix("/"), isBrowsableFolder(at: URL(fileURLWithPath: path)) else { return nil }
+            return folderRow(path: path, name: result.title, id: result.id, candidateID: result.id)
         case .action, .process:
             return nil
         }
@@ -276,7 +216,7 @@ enum SpotlightBackend {
         return ["settings", "preferences", "lumio settings", "lumio preferences", "lumio"].contains { $0.hasPrefix(typed) }
     }
 
-    // MARK: - Browser tabs, search tags, suggestions
+    // MARK: - Browser data and local search tags
 
     nonisolated static let tabLimit = 4
 
@@ -289,7 +229,7 @@ enum SpotlightBackend {
         )
     }
 
-    /// "Press Tab" row. `rest` = the text that would be searched (`cats yt` → "cats").
+    /// "Press Tab" row. `rest` is the text to search inside the local scope.
     static func hintItem(for tag: SearchTag, rest: String = "") -> SpotlightItem {
         SpotlightItem(
             id: "taghint|\(tag.keyword)",
@@ -297,7 +237,7 @@ enum SpotlightBackend {
             kind: .tagHint, colors: tag.colors,
             meta: rest.isEmpty ? "Press Tab to search \(tag.name)  ·  \(tag.keyword) ⇥"
                 : "Press Tab to search \(tag.name) for “\(rest)”",
-            symbol: tag.symbol, payload: tag.keyword, favicon: tag.faviconHost
+            symbol: tag.symbol, payload: tag.keyword
         )
     }
 
@@ -329,38 +269,17 @@ enum SpotlightBackend {
         }
     }
 
-    /// Search suggestions. Inside a tag they search that site; untagged, the web (Google).
-    static func suggestionRows(_ suggestions: [String], tag: SearchTag?) -> [SpotlightItem] {
-        suggestions.map { text in
-            if let tag {
-                return SpotlightItem(
-                    id: "suggest|\(tag.keyword)|\(text)", name: text, kind: .web, colors: tag.colors,
-                    meta: "\(tag.name) suggestion", target: tag.url(for: text)?.absoluteString,
-                    symbol: "magnifyingglass", favicon: tag.faviconHost
-                )
-            }
-            return SpotlightItem(id: "suggest|\(text)", name: text, kind: .web, colors: "#8fb8ff,#3a6fd8",
-                                 meta: "Google suggestion", symbol: "magnifyingglass", favicon: "google.com")
-        }
-    }
-
     /// What the second pass of a normal search gathers off the main thread.
     nonisolated struct Extras: Sendable {
-        var files: [FileHit] = []
+        var folders: [FolderHit] = []
         var bookmarks: [Bookmark] = []
         var history: [HistoryPage] = []
         var blocked = false
     }
 
-    private static func isBrowserRow(_ item: SpotlightItem) -> Bool {
-        item.id.hasPrefix("bookmark|") || item.id.hasPrefix("history|") || item.id == "browser|blocked"
-    }
-
-    /// Second pass of a normal search. Files stay in charge of the first screen: four local
-    /// results, then the two best browser rows (bookmark / history), then more local results,
-    /// with the remaining browser rows further down.
+    /// Merges folders and local browser data into the core results.
     static func addingExtras(_ extras: Extras, term: String, to rows: [SpotlightItem]) -> [SpotlightItem] {
-        var out = addingFiles(extras.files, to: rows, term: term)
+        var out = addingFolders(extras.folders, term: term, to: rows)
         let listed = Set(out.compactMap { $0.target?.lowercased() })
         var seenURLs = Set<String>()
         var browserRows = (bookmarkRows(extras.bookmarks) + historyRows(extras.history))
@@ -377,24 +296,8 @@ enum SpotlightBackend {
         let leading = out.prefix(8).lastIndex { [.tab, .tagHint, .url].contains($0.kind) }.map { $0 + 1 } ?? 0
         let first = min(max(leading, 4), out.count)
         out.insert(contentsOf: browserRows.prefix(2), at: first)
-        let later = min(first + min(browserRows.count, 2) + 6, out.lastIndex { $0.kind == .web && $0.target == nil } ?? out.count)
+        let later = min(first + min(browserRows.count, 2) + 6, out.count)
         out.insert(contentsOf: browserRows.dropFirst(2), at: later)
-        return out
-    }
-
-    /// Web suggestions arrive last (network): the best one right under the top browser rows so
-    /// it is on the first screen, the others a few rows further down.
-    static func addingSuggestions(_ suggestions: [String], to rows: [SpotlightItem]) -> [SpotlightItem] {
-        let names = Set(rows.filter { $0.kind == .web }.map { $0.name.lowercased() })
-        let items = suggestionRows(suggestions.filter { !names.contains($0.lowercased()) }, tag: nil)
-        guard !items.isEmpty else { return rows }
-        var out = rows
-        let webIndex = out.lastIndex { $0.kind == .web && $0.target == nil } ?? out.count
-        let afterBrowser = out.prefix(10).lastIndex(where: isBrowserRow).map { $0 + 1 } ?? min(4, out.count)
-        let first = min(afterBrowser, webIndex)
-        out.insert(items[0], at: first)
-        let rest = min(first + 6, out.lastIndex { $0.kind == .web && $0.target == nil } ?? out.count)
-        out.insert(contentsOf: items.dropFirst(), at: rest)
         return out
     }
 
@@ -410,17 +313,8 @@ enum SpotlightBackend {
         )
     }
 
-    /// Rows while a web search tag is active: the search itself, the site's open tabs, then
-    /// pages of the site you visited recently (newest first).
-    static func tagRows(tag: SearchTag, term: String, tabs: [BrowserTab], history: [HistoryPage]) -> [SpotlightItem] {
-        let target = tag.url(for: term)?.absoluteString
-        let search = SpotlightItem(
-            id: "tag|\(tag.keyword)|\(term)",
-            name: term.isEmpty ? "Open \(tag.name)" : "Search \(tag.name) for “\(term)”",
-            kind: .web, colors: tag.colors,
-            meta: term.isEmpty ? (tag.homeURL?.host ?? tag.name) : "\(tag.name) search",
-            target: target, symbol: tag.symbol, favicon: tag.faviconHost
-        )
+    /// Open tabs and local history for the selected site.
+    static func tagRows(tag: SearchTag, tabs: [BrowserTab], history: [HistoryPage]) -> [SpotlightItem] {
         let tabRows = tabs.map(item(from:))
         let openURLs = Set(tabs.map(\.url))
         let historyRows = history.filter { !openURLs.contains($0.url) }.map { page in
@@ -431,7 +325,7 @@ enum SpotlightBackend {
                 favicon: FaviconStore.host(of: page.url)
             )
         }
-        return [search] + tabRows + historyRows
+        return tabRows + historyRows
     }
 
     /// Open tabs of a tag's site, narrowed by the typed words.
@@ -445,98 +339,88 @@ enum SpotlightBackend {
         }
     }
 
-    /// File-tag / whole-Mac file hits as rows: when it was last used, and where.
-    static func fileRows(_ hits: [FileHit]) -> [SpotlightItem] {
-        hits.map { hit in
-            let place = PathDisplay.directory(of: hit.path)
-            let when = hit.date.map { relative($0) + " · " } ?? ""
-            return SpotlightItem(
-                id: "file|" + hit.path, name: hit.name, kind: hit.isFolder ? .folder : .doc,
-                meta: when + place, target: hit.path, iconPath: hit.path
-            )
+    /// Resolves a typed absolute path to its folder, or to the enclosing folder of a file.
+    static func directFolder(for term: String, excluding: [String]) -> SpotlightItem? {
+        guard let folder = FolderAddressQuery.existingFolder(in: term),
+              isBrowsableFolder(at: folder, excluding: excluding)
+        else { return nil }
+        return folderRow(path: folder.path, name: FileManager.default.displayName(atPath: folder.path))
+    }
+
+    nonisolated static func isBrowsableFolder(at typed: URL, excluding: [String] = []) -> Bool {
+        guard typed.isFileURL, typed.path.hasPrefix("/") else { return false }
+        let normalized = typed.standardizedFileURL
+        let resolved = normalized.resolvingSymlinksInPath()
+        guard ![normalized, resolved].contains(where: { url in
+            url.pathComponents.contains { $0.lowercased().hasSuffix(".app") }
+                || FileSearchPaths.isExcluded(url.path, by: excluding)
+        }) else { return false }
+
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+            && (try? resolved.resourceValues(forKeys: [.isPackageKey]).isPackage) != true
+    }
+
+    static func folderRows(_ hits: [FolderHit]) -> [SpotlightItem] {
+        hits.compactMap { hit in
+            guard isBrowsableFolder(at: URL(fileURLWithPath: hit.path)) else { return nil }
+            return folderRow(path: hit.path, name: hit.name, date: hit.date)
         }
     }
 
-    /// Merges whole-Mac matches (Spotlight) with Lumio's own file results and orders them the
-    /// way Fluent Search does: how well the NAME matches comes first (exact name, then starts
-    /// with the text, then a word starts with it, then contains it, then loose fuzzy matches).
-    /// Within the same quality: what you picked before, then the MOST RECENT file (so the PSDs
-    /// you made this week come before last year's). The top row never moves, so ⏎ stays
-    /// predictable, and non-file rows (apps, tabs, links) keep their places.
-    static func addingFiles(_ hits: [FileHit], to rows: [SpotlightItem], term: String = "") -> [SpotlightItem] {
+    private static func folderRow(
+        path: String, name: String, date: Date? = nil, id: String? = nil, candidateID: String? = nil
+    ) -> SpotlightItem {
+        let directory = PathDisplay.directory(of: path)
+        let meta = date.map { relative($0) + " · " + directory } ?? directory
+        return SpotlightItem(
+            id: id ?? "folder|" + path, name: name, kind: .folder,
+            meta: meta, target: path, iconPath: path, candidateID: candidateID
+        )
+    }
+
+    private static func addingFolders(_ hits: [FolderHit], term: String, to rows: [SpotlightItem]) -> [SpotlightItem] {
+        guard !hits.isEmpty else { return rows }
         let listed = Set(rows.compactMap { $0.target?.lowercased() })
-        let fresh = hits.filter { !listed.contains($0.path.lowercased()) }
-        let extra = fileRows(fresh)
-        let (words, typedExtensions) = SpotlightFiles.parse(term)
+        let fresh = folderRows(hits.filter { !listed.contains($0.path.lowercased()) })
+        let words = term.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
         let needle = words.joined(separator: " ")
-        guard !needle.isEmpty else {
-            var out = rows
-            out.insert(contentsOf: extra, at: out.lastIndex { $0.kind == .web && $0.target == nil } ?? out.count)
-            return out
-        }
+        guard !needle.isEmpty else { return rows + fresh }
 
-        func isFile(_ item: SpotlightItem) -> Bool {
-            (item.kind == .doc || item.kind == .folder) && item.target?.hasPrefix("/") == true
-        }
-        // When each file was last touched: Spotlight's answer for its hits, the file's own
-        // modification date for Lumio's.
-        var dates: [String: Date] = [:]
-        for hit in hits { dates[hit.path] = hit.date }
-        func date(_ item: SpotlightItem) -> Date {
-            guard let path = item.target else { return .distantPast }
-            if let known = dates[path] { return known }
-            let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
-            dates[path] = stamp ?? .distantPast
-            return stamp ?? .distantPast
-        }
-
-        let slots = rows.indices.filter { $0 > 0 && isFile(rows[$0]) }
-        let pool = slots.map { rows[$0] } + extra
-        let ranked = pool.enumerated()
-            .map { index, item -> (item: SpotlightItem, tier: Int, weight: Double, date: Date, order: Int) in
-                // Code and config files rank after every other file.
-                (item, SpotlightFiles.nameScore(item.name.lowercased(), needle: needle, words: words)
-                    - (typedExtensions.isEmpty && SpotlightFiles.isLowPriority(item.name) ? 10 : 0),
-                 UsageLearning.shared.weight(forTarget: item.target), date(item), index)
+        // Keep the first result stable and merge the remaining directory matches in their slots.
+        let slots = rows.indices.dropFirst().filter { rows[$0].kind == .folder }
+        let dates = Dictionary(hits.compactMap { hit in hit.date.map { (hit.path, $0) } }, uniquingKeysWith: max)
+        let ranked = (slots.map { rows[$0] } + fresh).enumerated()
+            .map { index, row in
+                let score = SpotlightFolders.nameScore(row.name.lowercased(), needle: needle, words: words)
+                let weight = UsageLearning.shared.weight(forTarget: row.target)
+                let date = row.target.flatMap { dates[$0] } ?? .distantPast
+                return (row: row, score: score, weight: weight, date: date, index: index)
             }
             .sorted { lhs, rhs in
-                if lhs.tier != rhs.tier { return lhs.tier > rhs.tier }
+                if lhs.score != rhs.score { return lhs.score > rhs.score }
                 if lhs.weight != rhs.weight { return lhs.weight > rhs.weight }
                 if lhs.date != rhs.date { return lhs.date > rhs.date }
-                return lhs.order < rhs.order
+                return lhs.index < rhs.index
             }
-            .map { entry -> SpotlightItem in
-                // Lumio's own rows gain the "when" the Spotlight rows already show.
-                var item = entry.item
-                if item.candidateID != nil, entry.date > .distantPast, let place = item.meta {
-                    item.meta = relative(entry.date) + " · " + place
-                }
-                return item
-            }
-
-        var out = rows
-        for (slot, item) in zip(slots, ranked) { out[slot] = item }
-        let overflow = Array(ranked.dropFirst(slots.count))
-        out.insert(contentsOf: overflow, at: out.lastIndex { $0.kind == .web && $0.target == nil } ?? out.count)
-        return out
+            .map(\.row)
+        var merged = rows
+        for (slot, row) in zip(slots, ranked) { merged[slot] = row }
+        merged.append(contentsOf: ranked.dropFirst(slots.count))
+        return merged
     }
 
-    /// Empty field: recently used apps, then recently opened files.
-    static func suggestionRows(apps: [RecentItem], files: [RecentItem]) -> [SpotlightItem] {
-        let appRows = apps.map { app in
-            SpotlightItem(
+    /// The empty field shows recently used applications.
+    static func suggestionRows(apps: [RecentItem]) -> [SpotlightItem] {
+        apps.compactMap { app in
+            let appURL = URL(fileURLWithPath: app.path)
+            guard !BrowserOpening.isBlockedApplication(appURL) else { return nil }
+            return SpotlightItem(
                 id: "recent|" + app.path, name: app.name, kind: .app,
-                target: app.path, iconPath: URL(fileURLWithPath: app.path).resolvingSymlinksInPath().path
+                target: app.path, iconPath: appURL.resolvingSymlinksInPath().path
             )
         }
-        let fileRows = files.map { file in
-            SpotlightItem(
-                id: "recent|" + file.path, name: file.name, kind: .doc,
-                meta: "\(file.isNewDownload ? "Downloaded" : "Opened") \(relative(file.lastUsed)) · \(PathDisplay.directory(of: file.path))",
-                target: file.path, iconPath: file.path
-            )
-        }
-        return appRows + fileRows
     }
 
     private static func relative(_ date: Date) -> String {
@@ -545,18 +429,14 @@ enum SpotlightBackend {
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 
-    // MARK: - Pinned rows (quick folders, Finder)
-
-    /// Desktop, Documents, …, Applications, Trash and Finder: shown on top when the text
-    /// matches their name, since the indexer doesn't cover them (or ranks them low).
-    private static func pinned(for request: SpotlightRequest) -> [SpotlightItem] {
+    private static func quickRows(for request: SpotlightRequest) -> [SpotlightItem] {
         typealias QuickFolder = AppConstants.Launcher.QuickFolder
         typealias Finder = AppConstants.Launcher.Finder
         var scope = LauncherSearchLogic.pinnedLookupScope(for: request.term)
         switch request.browse {
         case nil: break
-        case .folder: scope = scope == .unscoped ? .folders : .disabled
         case .app: scope = scope == .unscoped ? .apps : .disabled
+        case .folder: scope = scope == .unscoped ? .folders : .disabled
         default: scope = .disabled
         }
         guard let needle = LauncherSearchLogic.normalizedPinnedLookupQuery(for: request.term, scope: scope)
@@ -566,11 +446,9 @@ enum SpotlightBackend {
         if scope == .unscoped || scope == .folders {
             for entry in QuickFolder.entries {
                 let title = entry.title.lowercased()
-                guard title.contains(needle)
-                    || (title.hasPrefix(needle) && needle.count >= QuickFolder.minPrefixMatchLength)
-                else { continue }
+                guard title.contains(needle) else { continue }
                 let path = entry.resolvedPath(homeDirectory: NSHomeDirectory())
-                guard FileManager.default.fileExists(atPath: path) else { continue }
+                guard isBrowsableFolder(at: URL(fileURLWithPath: path)) else { continue }
                 rows.append(SpotlightItem(
                     id: QuickFolder.idPrefix + title, name: entry.title, kind: .folder,
                     meta: entry.subtitle ?? QuickFolder.pinnedSubtitle, target: path, iconPath: path
@@ -586,24 +464,21 @@ enum SpotlightBackend {
         return rows
     }
 
-    /// Prefixes the core understands natively (see core/engine/src/query.rs).
     private static func hasEnginePrefix(_ term: String) -> Bool {
-        typealias P = AppConstants.Launcher.QueryPrefix
+        typealias Prefix = AppConstants.Launcher.QueryPrefix
         let lower = term.lowercased()
-        return [P.apps, P.files, P.folders].contains { lower.hasPrefix($0) }
+        return lower.hasPrefix(Prefix.apps) || lower.hasPrefix(Prefix.folders)
     }
 
-    /// Each item shows only once: apps by name, files/folders by path.
     private static func dedupeKey(_ item: SpotlightItem) -> String {
         switch item.kind {
         case .app: "app:" + item.name.lowercased()
-        case .doc: "doc:" + (item.target ?? item.id).lowercased()
         case .folder: "folder:" + (item.target ?? item.id).lowercased()
         default: item.id
         }
     }
 
-    /// "Safari.app" → "Safari", like Spotlight.
+    /// Drops the bundle extension from an app's display name.
     private static func displayName(forApp title: String) -> String {
         title.hasSuffix(".app") ? String(title.dropLast(4)) : title
     }
@@ -614,10 +489,6 @@ enum SpotlightBackend {
         var actions: [SpotlightAction] = item.kind == .process
             ? [.measureCPU, .killProcess]
             : [.open, .reveal]
-        if item.isFileTarget {
-            actions += [.openInEditor, .openInTerminal]
-            if let trash = trashAction(for: item) { actions.append(trash) }
-        }
         if item.kind == .app, let path = item.target {
             if SpotlightOpener.runningApp(at: path) != nil { actions += [.hideApp, .quitApp] }
             actions.append(.excludeApp)
@@ -632,18 +503,6 @@ enum SpotlightBackend {
                     symbol: action.symbol, action: action
                 )
             }
-    }
-
-    /// ⌘D on a row: Empty Trash on the Trash pin, Move to Trash on any other deletable file/folder,
-    /// nil for protected paths (/, home) and the other quick-folder pins.
-    static func trashAction(for item: SpotlightItem) -> SpotlightAction? {
-        guard item.isFileTarget, let path = item.target else { return nil }
-        let home = NSHomeDirectory()
-        if DeleteTargetLogic.isTrashPath(path, homeDirectory: home) { return .emptyTrash }
-        if DeleteTargetLogic.isQuickFolderPin(item.id) || DeleteTargetLogic.isProtected(path, homeDirectory: home) {
-            return nil
-        }
-        return .moveToTrash
     }
 
     /// Folds case + diacritics (and đ → d) so "cafe" matches "Café".

@@ -1,5 +1,5 @@
 //! Launch modes: the names a command line or a URL uses to open Lumio already in
-//! a particular mode (`lumio files`).
+//! a particular mode (`lumio apps`).
 //!
 //! One rule for every row: the query is `prefix` followed by the term. Adding a
 //! mode is adding a row; a shell that needs a `match` over mode names has
@@ -29,12 +29,6 @@ pub const MODES: &[Mode] = &[
         aliases: &["app"],
         prefix: "a\"",
         about: "applications only",
-    },
-    Mode {
-        name: "files",
-        aliases: &["file"],
-        prefix: "f\"",
-        about: "files only",
     },
     Mode {
         name: "folders",
@@ -225,14 +219,14 @@ mod tests {
 
     #[test]
     fn a_mode_resolves_by_name_and_by_alias() {
-        assert_eq!(resolve("files").unwrap().name, "files");
-        assert_eq!(resolve("file").unwrap().name, "files");
+        assert_eq!(resolve("apps").unwrap().name, "apps");
+        assert_eq!(resolve("app").unwrap().name, "apps");
     }
 
     #[test]
     fn resolution_ignores_case_and_surrounding_space() {
-        assert_eq!(resolve("Files").unwrap().name, "files");
-        assert_eq!(resolve("  FILE  ").unwrap().name, "files");
+        assert_eq!(resolve("Apps").unwrap().name, "apps");
+        assert_eq!(resolve("  APP  ").unwrap().name, "apps");
     }
 
     #[test]
@@ -244,9 +238,9 @@ mod tests {
 
     #[test]
     fn a_term_is_appended_to_the_prefix() {
-        assert_eq!(resolve("file").unwrap().query("report"), "f\"report");
+        assert_eq!(resolve("app").unwrap().query("editor"), "a\"editor");
         assert_eq!(resolve("kill").unwrap().query("chrome"), ":kill chrome");
-        assert_eq!(resolve("file").unwrap().query(""), "f\"");
+        assert_eq!(resolve("app").unwrap().query(""), "a\"");
     }
 
     /// A row whose prefix is not real grammar ships as a mode that opens an
@@ -297,7 +291,7 @@ mod tests {
     #[test]
     fn ordinary_search_text_is_allowed_through() {
         assert!(url_term_is_safe("password"));
-        assert!(url_term_is_safe("quarterly report 2026"));
+        assert!(url_term_is_safe("quarterly editor 2026"));
         assert!(url_term_is_safe("a:b"));
         assert!(url_term_is_safe(""));
     }
@@ -314,16 +308,17 @@ mod tests {
 
     #[test]
     fn a_bare_mode_name_opens_that_mode() {
-        assert_eq!(parse(&["files"]), shown("f\""));
-        assert_eq!(parse(&["file"]), shown("f\""));
+        assert_eq!(parse(&["apps"]), shown("a\""));
+        assert_eq!(parse(&["app"]), shown("a\""));
+        assert_eq!(parse(&["dirs", "D/T"]), shown("d\"D/T"));
     }
 
     #[test]
     fn a_term_rides_along_with_the_mode() {
-        assert_eq!(parse(&["files", "report"]), shown("f\"report"));
+        assert_eq!(parse(&["apps", "editor"]), shown("a\"editor"));
         assert_eq!(
-            parse(&["--mode", "files", "quarterly", "report"]),
-            shown("f\"quarterly report")
+            parse(&["--mode", "apps", "quarterly", "editor"]),
+            shown("a\"quarterly editor")
         );
     }
 
@@ -336,11 +331,13 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_unknown_mode_is_an_error() {
-        assert_eq!(
-            parse(&["--mode", "unknown"]),
-            Launch::UnknownMode("unknown".to_string())
-        );
+    fn explicit_unknown_and_removed_modes_are_errors() {
+        for mode in ["unknown", "files", "file", "web", "search"] {
+            assert_eq!(
+                parse(&["--mode", mode]),
+                Launch::UnknownMode(mode.to_string())
+            );
+        }
     }
 
     #[test]
@@ -353,7 +350,7 @@ mod tests {
 
     #[test]
     fn query_passes_grammar_through_untouched() {
-        assert_eq!(parse(&["--query", "f\"invoice"]), shown("f\"invoice"));
+        assert_eq!(parse(&["--query", "a\"invoice"]), shown("a\"invoice"));
         assert_eq!(parse(&["--query", ":kill chrome"]), shown(":kill chrome"));
     }
 
@@ -389,17 +386,17 @@ mod tests {
     /// hands over a `Vec<String>` including argv[0], hence the skip.
     #[test]
     fn the_iterator_shapes_the_shells_use_all_compile() {
-        let forwarded: Vec<String> = vec!["lumio".into(), "files".into(), "pass".into()];
+        let forwarded: Vec<String> = vec!["lumio".into(), "apps".into(), "pass".into()];
         assert_eq!(
             parse_args(forwarded.iter().skip(1)),
-            shown("f\"pass"),
+            shown("a\"pass"),
             "a Vec<String> argv with the program name skipped"
         );
 
-        let owned: Vec<String> = vec!["file".into()];
-        assert_eq!(parse_args(owned.into_iter()), shown("f\""));
+        let owned: Vec<String> = vec!["app".into()];
+        assert_eq!(parse_args(owned.into_iter()), shown("a\""));
 
-        assert_eq!(parse_args(["file"].iter().copied()), shown("f\""));
+        assert_eq!(parse_args(["app"].iter().copied()), shown("a\""));
         assert_eq!(
             parse_args(std::env::args().skip(usize::MAX)),
             Launch::Normal

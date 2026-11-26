@@ -4,7 +4,6 @@ use lumio_indexing::CandidateKind;
 // Query prefixes: leading letter matched case-insensitively, trailing `"`
 // exactly (see `strip_query_prefix`).
 const PREFIX_APPS: &[u8] = b"a\"";
-const PREFIX_FILES: &[u8] = b"f\"";
 const PREFIX_FOLDERS: &[u8] = b"d\"";
 
 #[derive(Clone, Debug)]
@@ -15,19 +14,13 @@ pub(crate) struct ParsedQuery {
 
 impl ParsedQuery {
     pub(crate) fn from_input(input: &str) -> Self {
+        #[cfg(windows)]
+        let input = input.replace('\\', "/");
         let trimmed = input.trim();
-
         if let Some(rest) = strip_query_prefix(trimmed, PREFIX_FOLDERS) {
             return Self {
                 normalized_query: normalize_for_search(rest),
                 kind_filter: Some(CandidateKind::Folder),
-            };
-        }
-
-        if let Some(rest) = strip_query_prefix(trimmed, PREFIX_FILES) {
-            return Self {
-                normalized_query: normalize_for_search(rest),
-                kind_filter: Some(CandidateKind::File),
             };
         }
 
@@ -40,8 +33,12 @@ impl ParsedQuery {
 
         Self {
             normalized_query: normalize_for_search(trimmed),
-            kind_filter: None,
+            kind_filter: trimmed.contains('/').then_some(CandidateKind::Folder),
         }
+    }
+
+    pub(crate) fn is_folder_path(&self) -> bool {
+        self.kind_filter == Some(CandidateKind::Folder) && self.normalized_query.contains('/')
     }
 }
 
@@ -64,15 +61,26 @@ mod tests {
     use lumio_indexing::CandidateKind;
 
     #[test]
-    fn folder_prefix_sets_filter() {
-        let parsed = ParsedQuery::from_input("D\"report");
-        assert_eq!(parsed.kind_filter, Some(CandidateKind::Folder));
-        assert_eq!(parsed.normalized_query, "report");
+    fn app_prefix_sets_filter() {
+        let parsed = ParsedQuery::from_input("A\"safari");
+        assert_eq!(parsed.kind_filter, Some(CandidateKind::App));
+        assert_eq!(parsed.normalized_query, "safari");
     }
 
     #[test]
-    fn old_recent_and_regex_prefixes_are_plain_text() {
-        assert!(ParsedQuery::from_input("rc\"report").kind_filter.is_none());
-        assert!(ParsedQuery::from_input("r\"foo").kind_filter.is_none());
+    fn path_queries_search_only_folders() {
+        for input in ["D/T", "d\"D/T"] {
+            let parsed = ParsedQuery::from_input(input);
+            assert_eq!(parsed.kind_filter, Some(CandidateKind::Folder));
+            assert_eq!(parsed.normalized_query, "d/t");
+            assert!(parsed.is_folder_path());
+        }
+    }
+
+    #[test]
+    fn removed_prefixes_are_plain_text() {
+        for input in ["f\"document", "rc\"report", "r\"foo"] {
+            assert!(ParsedQuery::from_input(input).kind_filter.is_none());
+        }
     }
 }

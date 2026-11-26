@@ -4,8 +4,8 @@ import Foundation
 // SpotlightBackend; SpotlightData is now just sample data for the motion lab.
 
 enum SpotlightKind: String, CaseIterable, Identifiable {
-    case app, folder, doc, setting, url, web, cmd
-    /// An open browser tab (⏎ switches to it) and the "press Tab to search YouTube" hint row.
+    case app, folder, setting, url, cmd
+    /// An open browser tab and a local search tag hint.
     case tab, tagHint
     /// An open window of any app (⏎ switches to it).
     case window
@@ -17,10 +17,8 @@ enum SpotlightKind: String, CaseIterable, Identifiable {
         switch self {
         case .app: "Applications"
         case .folder: "Folders"
-        case .doc: "Documents"
         case .setting: "Settings"
         case .url: "Links"
-        case .web: "Web"
         case .cmd: "Actions"
         case .tab: "Tabs"
         case .tagHint: "Search Tags"
@@ -37,7 +35,6 @@ enum SpotlightKind: String, CaseIterable, Identifiable {
     var pillGroup: SpotlightKind {
         switch self {
         case .setting: .app
-        case .tagHint: .web
         default: self
         }
     }
@@ -47,18 +44,15 @@ enum SpotlightKind: String, CaseIterable, Identifiable {
         switch self {
         case .app: "square.grid.2x2"
         case .folder: "folder"
-        case .doc: "doc.text"
         case .process: "cpu"
         default: "circle"
         }
     }
-
-    var isDocument: Bool { self == .doc }
 }
 
 /// What can be done with an item when you open its actions (⌘K).
 enum SpotlightAction: String {
-    case open, reveal, openInEditor, openInTerminal, moveToTrash, emptyTrash
+    case open, reveal, moveToTrash, emptyTrash
     case hideApp, quitApp, excludeApp
     // Process rows (ps").
     case measureCPU, killProcess
@@ -67,8 +61,6 @@ enum SpotlightAction: String {
         switch self {
         case .open: "Open"
         case .reveal: "Show in \(FileManagerApp.name)"
-        case .openInEditor: "Open in Editor  ⌘E"
-        case .openInTerminal: "Open in Terminal  ⌘T"
         case .moveToTrash: "Move to Trash  ⌘D"
         case .emptyTrash: "Empty Trash  ⌘D"
         case .hideApp: "Hide App"
@@ -83,8 +75,6 @@ enum SpotlightAction: String {
         switch self {
         case .open: "arrow.up.forward.app"
         case .reveal: "folder"
-        case .openInEditor: "pencil"
-        case .openInTerminal: "terminal"
         case .moveToTrash: "trash"
         case .emptyTrash: "trash.slash"
         case .hideApp: "eye.slash"
@@ -106,7 +96,7 @@ struct SpotlightItem: Identifiable, Equatable {
     var meta: String? = nil
     var rank: Int = 0
     var score: Double = 0
-    /// Target to open: an app/file/folder path, or a URL
+    /// Target to open: an app or folder path, or a URL
     /// (`x-apple.systempreferences:…`, `https:…`).
     var target: String? = nil
     /// Load the real icon from this path (NSWorkspace). nil = draw a colored tile.
@@ -125,15 +115,10 @@ struct SpotlightItem: Identifiable, Equatable {
     var favicon: String? = nil
     /// Open browser tab (kind == .tab).
     var tab: BrowserTab? = nil
-    /// A real file or folder on disk (not a URL scheme), the target of editor/terminal/trash.
-    var isFileTarget: Bool {
-        (kind.isDocument || kind == .folder) && target?.hasPrefix("/") == true
-    }
-
     /// Has an actions view (⌘K).
     var supportsActions: Bool {
         if kind == .process { return pid != nil }
-        return (kind == .app || kind.isDocument || kind == .folder) && target != nil
+        return (kind == .app || kind == .folder) && target != nil
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
@@ -150,6 +135,60 @@ extension SpotlightItem {
             && target == other.target && candidateID == other.candidateID
             && favicon == other.favicon && tab?.url == other.tab?.url
     }
+
+    /// Legacy pins and learned picks may have been created from removed result sources.
+    static func acceptsSavedTarget(
+        kind: String, sourceID: String?, name: String, target: String, iconPath: String?,
+        symbol: String?, meta: String?, browserID: String? = nil
+    ) -> Bool {
+        let id = sourceID?.lowercased() ?? ""
+        if BrowserOpening.isBlockedBundleID(browserID) || isSafariApp(name: nil, path: iconPath)
+            || id.hasPrefix("tab|safari|") || id.hasPrefix("safari|")
+        {
+            return false
+        }
+        switch SpotlightKind(rawValue: kind) {
+        case .app:
+            let identity = id.hasPrefix("app:") || id.hasPrefix("app|") ? String(id.dropFirst(4)) : id
+            return !isSafariApp(name: name, path: target)
+                && !isSafariApp(name: identity, path: identity)
+                && !BrowserOpening.isBlockedBundleID(identity)
+        case .folder:
+            return target.hasPrefix("/") && SpotlightBackend.isBrowsableFolder(at: URL(fileURLWithPath: target))
+        case .setting:
+            return true
+        case .url:
+            guard BrowserOpening.webAddress(target) != nil else { return false }
+            let removedPrefixes = ["web|", "engine|", "search|", "suggest|", "urlhistory|"]
+            if removedPrefixes.contains(where: { id.hasPrefix($0) }) { return false }
+            let detail = meta?.lowercased() ?? ""
+            if detail == "bookmark · safari" || detail.hasSuffix("· open in safari")
+                || detail.hasSuffix("· open in safari technology preview") { return false }
+            let browserResult = id.hasPrefix("history|") || id.hasPrefix("bookmark|") || id.hasPrefix("tab|")
+                || symbol == "clock.arrow.circlepath" || symbol == "bookmark.fill" || symbol == "square.on.square"
+                || detail.hasPrefix("visited ") || detail.hasPrefix("bookmark · ") || detail.contains(" · open in ")
+            // Some older browser rows only identify their source by the app icon.
+            let identifiesTabBrowser = id.hasPrefix("tab|") || detail.contains(" · open in ")
+            return !browserResult || iconPath?.isEmpty == false || browserID != nil || identifiesTabBrowser
+        default:
+            return false
+        }
+    }
+
+    func canSave(as kind: SpotlightKind, target: String) -> Bool {
+        Self.acceptsSavedTarget(
+            kind: kind.rawValue, sourceID: id, name: name, target: target,
+            iconPath: iconPath, symbol: symbol, meta: meta, browserID: tab?.browser.bundleID
+        )
+    }
+
+    private static func isSafariApp(name: String?, path: String?) -> Bool {
+        let appName = name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let safariNames = ["safari", "safari technology preview", "safari.app", "safari technology preview.app"]
+        if let appName, safariNames.contains(appName) { return true }
+        guard let path, !path.isEmpty else { return false }
+        return BrowserOpening.isBlockedApplication(URL(fileURLWithPath: path))
+    }
 }
 
 // MARK: - Sample data (motion lab / Preview only)
@@ -163,10 +202,8 @@ enum SpotlightData {
         .app("FaceTime.app", "#6ee07a,#1fa34a", "▣", 4),
         .app("Freeform.app", "#5fe3e8,#1a7f9c", "〜", 3),
         .app("File Manager.app", "#8fa4bd,#5b6c82", nil, 2),
-        .app("Safari.app", "#79d0ff,#1f6fd0", "◍", 7),
         .folder("Documents", "Users ▸ Documents", 5),
         .folder("Downloads", "Users ▸ Downloads", 6),
-        .doc("Q3 Report.pdf", "Documents ▸ Reports", "📕", 4),
         .setting("Wi‑Fi", "System Settings"),
     ]
 }
@@ -177,9 +214,6 @@ private extension SpotlightItem {
     }
     static func folder(_ name: String, _ path: String, _ rank: Int) -> Self {
         SpotlightItem(id: "folder|\(name)", name: name, kind: .folder, colors: "#6cb8f5,#2f7fe0", glyph: "📁", meta: path, rank: rank)
-    }
-    static func doc(_ name: String, _ path: String, _ glyph: String, _ rank: Int) -> Self {
-        SpotlightItem(id: "doc|\(name)", name: name, kind: .doc, colors: "#dfe3ea,#b6bdc9", glyph: glyph, meta: path, rank: rank)
     }
     static func setting(_ name: String, _ meta: String) -> Self {
         SpotlightItem(id: "setting|\(name)", name: name, kind: .setting, colors: "#9aa2ad,#5c636e", glyph: "⚙️", meta: meta)

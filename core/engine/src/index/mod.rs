@@ -1,10 +1,11 @@
 use crate::BootstrapScope;
 use crate::config::RuntimeConfig;
 mod apps;
-mod files;
+mod folders;
 mod settings;
 
-pub(crate) use files::should_exclude_path;
+pub(crate) use folders::folder_candidate_id;
+pub use folders::should_exclude_folder;
 use lumio_indexing::{Candidate, CandidateIdKind};
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -13,8 +14,6 @@ use std::thread;
 const INDEX_CHANNEL_CAPACITY: usize = 2048;
 
 pub(super) const APP_CANDIDATE_ID_PREFIX: &str = CandidateIdKind::PREFIX_APP;
-pub(super) const FILE_CANDIDATE_ID_PREFIX: &str = CandidateIdKind::PREFIX_FILE;
-pub(super) const FOLDER_CANDIDATE_ID_PREFIX: &str = CandidateIdKind::PREFIX_FOLDER;
 pub(super) const SETTINGS_CANDIDATE_ID_PREFIX: &str = CandidateIdKind::PREFIX_SETTING;
 
 pub struct CandidateDiscoveryStream {
@@ -36,11 +35,11 @@ pub fn discover_candidates_stream_scoped(
     let (tx, rx) = mpsc::sync_channel(INDEX_CHANNEL_CAPACITY);
     let config = config.clone();
     let producer_handle = thread::spawn(move || {
-        let files_handle = if scope.files {
-            let files_config = config.clone();
-            let files_tx = tx.clone();
+        let folder_handle = if scope.folders {
+            let folder_config = config.clone();
+            let folder_tx = tx.clone();
             Some(thread::spawn(move || {
-                files::discover_local_files_and_folders(&files_config, files_tx);
+                folders::discover_folders(&folder_config, folder_tx);
             }))
         } else {
             None
@@ -54,10 +53,10 @@ pub fn discover_candidates_stream_scoped(
         }
         drop(tx);
 
-        if let Some(handle) = files_handle
+        if let Some(handle) = folder_handle
             && let Err(err) = handle.join()
         {
-            eprintln!("lumio index: file worker panicked: {err:?}");
+            eprintln!("lumio index: folder worker panicked: {err:?}");
         }
     });
 

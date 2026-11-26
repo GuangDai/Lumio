@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Drops the launcher's preview, highlighted text, and row icon caches and returns the
+/// Drops the launcher's row icon and preview caches and returns the
 /// freed memory to macOS. The caches rebuild on demand.
 enum MemoryTrim {
     /// How long the launcher must stay hidden before its caches are dropped. Trimming on every
@@ -12,10 +12,8 @@ enum MemoryTrim {
     /// Called after the launcher has stayed hidden for `hiddenTrimDelay`, and when macOS
     /// reports memory pressure.
     static func releaseCaches() async {
-        HighlightedTextCache.purge()
         RowIconCache.purge()
         PreviewFacts.purge()
-        await QuickLookPreviewService.shared.purge()
         malloc_zone_pressure_relief(nil, 0)
     }
 

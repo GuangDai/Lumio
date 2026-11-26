@@ -1,4 +1,3 @@
-use globset::{Glob, GlobBuilder};
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -111,22 +110,6 @@ impl PathPolicy {
     pub(crate) fn id_component(&self, path: &str) -> String {
         self.normalize_for_matching(path).to_lowercase()
     }
-}
-
-/// Compile one ignore pattern into its path policy and glob. The caller groups
-/// globs by policy into a `GlobSet` so every candidate is matched against all
-/// patterns of a policy in a single pass.
-pub(crate) fn compile_ignore_glob(pattern: &str) -> Option<(PathPolicy, Glob)> {
-    let policy = PathPolicy::for_base(pattern);
-    let normalized_pattern = policy.normalize_for_matching(pattern);
-    let mut builder = GlobBuilder::new(&normalized_pattern);
-    builder.literal_separator(true);
-    builder.build().ok().map(|glob| (policy, glob))
-}
-
-#[cfg(test)]
-pub(crate) fn compile_ignore_matcher(pattern: &str) -> Option<(PathPolicy, globset::GlobMatcher)> {
-    compile_ignore_glob(pattern).map(|(policy, glob)| (policy, glob.compile_matcher()))
 }
 
 fn trim_trailing_slashes(path: &str) -> &str {

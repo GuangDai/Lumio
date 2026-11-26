@@ -6,7 +6,9 @@ use crate::scoring::{
     path_match_score, push_top_k, query_kind_penalty_with_settings_flag,
 };
 use lumio_indexing::{Candidate, CandidateKind};
-use lumio_matching::{fuzzy_quality_bonus_prepared, fuzzy_score_prepared, prepare_query};
+use lumio_matching::{
+    PreparedQuery, fuzzy_quality_bonus_prepared, fuzzy_score_prepared, prepare_query,
+};
 use lumio_ranking::rank_score;
 use std::collections::BinaryHeap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -116,100 +118,38 @@ impl QueryEngine {
         finalize_top_k(top)
     }
 
-    pub(crate) fn search_files_indices(
-        &self,
-        filter: &crate::FileFilter,
-        limit: usize,
-    ) -> Vec<(u32, i64)> {
-        if limit == 0 {
-            return vec![];
-        }
-        let exts = extensions_for(&filter.categories);
-        let want_folder = filter.categories.iter().any(|c| c == "folder");
-        let only_folder = want_folder && filter.categories.iter().all(|c| c == "folder");
-        let want_screenshot = filter.categories.iter().any(|c| c == "screenshot");
-        // Extensions of every OTHER requested category, so a candidate that
-        // satisfies one of them is not also forced through the screenshot gate.
-        let other_exts: Vec<&'static str> = if want_screenshot {
-            let others: Vec<String> = filter
-                .categories
-                .iter()
-                .filter(|c| *c != "screenshot")
-                .cloned()
-                .collect();
-            extensions_for(&others)
-        } else {
-            Vec::new()
-        };
-        let type_gated = !filter.categories.is_empty();
-        let terms = filter.terms.trim().to_lowercase();
-
-        let mut matches: Vec<(u32, i64)> = Vec::new();
-        for (idx, c) in self.candidates.iter().enumerate() {
-            let cand = &c.candidate;
-            let is_file = cand.kind == CandidateKind::File;
-            let is_folder = cand.kind == CandidateKind::Folder;
-            if !is_file && !is_folder {
-                continue; // apps and processes are never file-recall results
-            }
-            if only_folder && !is_folder {
-                continue;
-            }
-            // A type-named query ("pdfs", "screenshots") means files, not folders.
-            if type_gated && !want_folder && is_folder {
-                continue;
-            }
-            if is_file && !exts.is_empty() && !exts.contains(&ext_of(&cand.path).as_str()) {
-                continue;
-            }
-            // "screenshots" is a PATH heuristic, not an extension, so it must
-            // gate only its own category: asking for "screenshots and pdfs"
-            // must not drop every pdf whose path lacks the word.
-            if want_screenshot && is_file {
-                let p = cand.path.to_lowercase();
-                let looks_like_screenshot = p.contains("screenshot") || p.contains("screen shot");
-                let matches_other_category =
-                    !other_exts.is_empty() && other_exts.contains(&ext_of(&cand.path).as_str());
-                if !looks_like_screenshot && !matches_other_category {
-                    continue;
-                }
-            }
-            let recency = cand.fs_modified_at_unix_s.unwrap_or(0);
-            if let (Some(start), Some(end)) = (filter.start, filter.end)
-                && (recency < start || recency > end)
-            {
-                continue;
-            }
-            if !filter.locations.is_empty() {
-                let path = cand.path.to_lowercase();
-                let in_location = filter
-                    .locations
-                    .iter()
-                    .any(|loc| location_folder(loc).is_some_and(|f| path.contains(f)));
-                if !in_location {
-                    continue;
-                }
-            }
-            if !terms.is_empty()
-                && !c.title_search.contains(&terms)
-                && !cand.path.to_lowercase().contains(&terms)
-            {
-                continue;
-            }
-            matches.push((idx as u32, recency));
+    fn search_folder_path(&self, query: &str, limit: usize) -> Vec<(u32, i64)> {
+        // The launcher resolves explicit absolute or home-relative addresses itself.
+        // An unresolved absolute path must not turn into a fuzzy match elsewhere.
+        if query.starts_with('/') || query.starts_with("~/") {
+            return Vec::new();
         }
 
-        // Most-recent first; stable tie-break by title.
-        matches.sort_by(|a, b| {
-            b.1.cmp(&a.1).then_with(|| {
-                self.candidates[a.0 as usize]
-                    .candidate
-                    .title
-                    .cmp(&self.candidates[b.0 as usize].candidate.title)
-            })
-        });
-        matches.truncate(limit);
-        matches
+        let terms: Vec<_> = query
+            .split('/')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(|part| (part, prepare_query(part)))
+            .collect();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+
+        let mut top = BinaryHeap::new();
+        for (idx, indexed) in self.candidates.iter().enumerate() {
+            if indexed.candidate.kind != CandidateKind::Folder {
+                continue;
+            }
+            if let Some(score) = folder_path_score(&terms, &indexed.path_search) {
+                push_top_k(
+                    &mut top,
+                    ScoredMatch::new(idx as u32, score, &indexed.candidate.title),
+                    limit,
+                );
+            }
+        }
+
+        finalize_top_k(top)
     }
 
     fn search_text_query(
@@ -258,8 +198,7 @@ impl QueryEngine {
             };
             let alias_score = alias_terms.and_then(|terms| {
                 if candidate.candidate.kind == CandidateKind::App {
-                    // Alias boosts are app-only to avoid distorting file/folder
-                    // ranking.
+                    // Alias boosts are app-only to avoid distorting folder ranking.
                     return Self::alias_match_score(
                         terms,
                         &candidate.title_search,
@@ -338,6 +277,8 @@ impl QueryEngine {
 
         let indices = if parsed_query.normalized_query.is_empty() {
             self.search_empty_query(kind_filter, limit)
+        } else if parsed_query.is_folder_path() {
+            self.search_folder_path(&parsed_query.normalized_query, limit)
         } else {
             self.search_text_query(&parsed_query.normalized_query, kind_filter, limit)
         };
@@ -351,48 +292,75 @@ impl QueryEngine {
     }
 }
 
-/// File extensions for each file-recall category (empty for `folder`).
-fn extensions_for(categories: &[String]) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    for c in categories {
-        let exts: &[&str] = match c.as_str() {
-            "pdf" => &["pdf"],
-            "image" | "screenshot" => &["png", "jpg", "jpeg", "heic", "gif", "tiff", "bmp", "webp"],
-            "movie" => &["mp4", "mov", "m4v", "avi", "mkv", "webm"],
-            "audio" => &["mp3", "m4a", "wav", "aac", "flac", "aiff"],
-            "document" => &["doc", "docx", "pages", "txt", "rtf", "md", "odt"],
-            "spreadsheet" => &["xls", "xlsx", "numbers", "csv", "ods"],
-            "presentation" => &["ppt", "pptx", "key", "odp"],
-            "archive" => &["zip", "tar", "gz", "rar", "7z", "dmg"],
-            _ => &[],
+/// Resolves an abbreviated suffix such as d/t against adjacent path components
+/// ending at the candidate itself.
+fn folder_path_score(terms: &[(&str, PreparedQuery<'_>)], path: &str) -> Option<i64> {
+    let mut components = path.rsplit('/').filter(|part| !part.is_empty());
+    let mut total = 0;
+    for (needle, prepared) in terms.iter().rev() {
+        let component = components.next()?;
+        total += if component == *needle {
+            2_000
+        } else if component.starts_with(*needle) {
+            1_500 - ((component.len() - needle.len()) as i64).min(250)
+        } else {
+            fuzzy_score_prepared(prepared, component)?.clamp(0, 999)
         };
-        out.extend_from_slice(exts);
     }
-    out
-}
-
-/// Lowercased extension of the filename in `path` (empty when none).
-fn ext_of(path: &str) -> String {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    match name.rsplit_once('.') {
-        Some((_, ext)) => ext.to_lowercase(),
-        None => String::new(),
-    }
-}
-
-/// Path fragment a location hint scopes to.
-fn location_folder(loc: &str) -> Option<&'static str> {
-    match loc {
-        "downloads" => Some("/downloads/"),
-        "desktop" => Some("/desktop/"),
-        "documents" => Some("/documents/"),
-        _ => None,
-    }
+    Some(total)
 }
 
 #[cfg(test)]
 mod tests {
     use super::QueryEngine;
+    use lumio_indexing::{Candidate, CandidateKind};
+
+    #[test]
+    fn abbreviations_match_adjacent_folder_components_only() {
+        let folder = |id, name, path| Candidate::new(id, CandidateKind::Folder, name, path);
+        let engine = QueryEngine::new(vec![
+            folder("folder:telegram", "Telegram", "/home/me/Downloads/Telegram"),
+            folder(
+                "folder:deep",
+                "Telegram",
+                "/home/me/Downloads/archive/Telegram",
+            ),
+            folder("folder:child", "child", "/home/me/Downloads/Telegram/child"),
+            Candidate::new(
+                "app:telegram",
+                CandidateKind::App,
+                "Telegram",
+                "/Applications/Downloads/Telegram.app",
+            ),
+        ]);
+
+        for input in ["D/T", "d\"D/T", "Dwlds/Tlgrm", "Dównlóads/Télegram"] {
+            let results = engine.search(input, 20);
+            assert_eq!(results.len(), 1, "{input}: {results:?}");
+            assert_eq!(results[0].id, "folder:telegram", "{input}");
+        }
+        let nested = engine.search("D/T/C", 20);
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].id, "folder:child");
+        assert!(engine.search("Telegram/Downloads", 20).is_empty());
+    }
+
+    #[test]
+    fn path_components_rank_exact_then_prefix_then_fuzzy() {
+        let folder = |id, name, path| Candidate::new(id, CandidateKind::Folder, name, path);
+        let engine = QueryEngine::new(vec![
+            folder("folder:fuzzy", "other", "/home/me/Drafts/other"),
+            folder("folder:prefix", "telegram", "/home/me/Downloads/telegram"),
+            folder("folder:exact", "t", "/home/me/d/t"),
+        ]);
+
+        let ids: Vec<_> = engine
+            .search("D/T", 20)
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(ids, ["folder:exact", "folder:prefix", "folder:fuzzy"]);
+    }
 
     #[test]
     fn term_boundary_match_rejects_inner_substring() {

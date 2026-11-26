@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The pages of the Settings window, listed in its sidebar (like Fluent Search's settings).
 enum SettingsPane: String, CaseIterable, Identifiable {
@@ -46,10 +45,10 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var keywords: String {
         switch self {
         case .general: "launch at login startup log level config file reset about version update check"
-        case .search: "file manager finder explorer open folders external drives ssd usb suggestions empty recent web google"
-        case .appearance: "corner radius liquid glass blur theme look"
-        case .indexing: "scan scope depth limit lazy folders skipped extra index files everything"
-        case .shortcuts: "hotkey keyboard key combination launcher quick look"
+        case .search: "file manager finder explorer open folders external drives ssd usb suggestions empty recent apps"
+        case .appearance: "corner radius theme look"
+        case .indexing: "scan scope depth limit lazy folders skipped extra index everything"
+        case .shortcuts: "hotkey keyboard key combination launcher"
         case .tabs: "tab hide show hidden round buttons bubbles idle processes"
         }
     }
@@ -71,10 +70,10 @@ struct ThemeSettingsView: View {
     @EnvironmentObject var themeStore: ThemeStore
     @Binding var settings: ThemeSettings
     @State var saveMessage: SaveMessage?
-    @State var fileScanDepthInput = ""
-    @State var fileScanLimitInput = ""
-    @State var fileScanDepthError: String?
-    @State var fileScanLimitError: String?
+    @State var folderScanDepthInput = ""
+    @State var folderScanLimitInput = ""
+    @State var folderScanDepthError: String?
+    @State var folderScanLimitError: String?
     @State var extraScanDirectoryMessage: String?
     @State var showFreshConfigConfirm = false
     @State var freshConfigMessage: String?
@@ -182,8 +181,8 @@ struct ThemeSettingsView: View {
                 }
 
                 Button("Save Config") {
-                    applyFileScanDepthInput()
-                    applyFileScanLimitInput()
+                    applyFolderScanDepthInput()
+                    applyFolderScanLimitInput()
                     let ok = themeStore.saveCurrentConfigToFile()
                     saveMessage = SaveMessage(text: ok ? "Saved" : "Save failed", succeeded: ok)
                     if ok {

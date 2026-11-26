@@ -63,9 +63,23 @@ nonisolated enum ProcessService {
 
         var rows: [ProcessRow] = []
         rows.reserveCapacity(procs.count)
+        var executableBuffer = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let executableCapacity = UInt32(executableBuffer.count)
+        var blockedBundles: [String: Bool] = [:]
         for var proc in procs {
             let pid = proc.kp_proc.p_pid
             guard pid > 0, proc.kp_eproc.e_ucred.cr_uid == ownUID else { continue }
+            let length = proc_pidpath(pid, &executableBuffer, executableCapacity)
+            if length > 0 {
+                let executable = String(decoding: executableBuffer.prefix(Int(length)).prefix(while: { $0 != 0 }), as: UTF8.self)
+                if let bundleEnd = executable.range(of: ".app/", options: .caseInsensitive) {
+                    // Safari's helpers live inside the app bundle. Check the outer bundle once.
+                    let appPath = String(executable[..<bundleEnd.upperBound].dropLast())
+                    let blocked = blockedBundles[appPath] ?? BrowserOpening.isBlockedApplication(URL(fileURLWithPath: appPath))
+                    blockedBundles[appPath] = blocked
+                    if blocked { continue }
+                }
+            }
             // p_comm is truncated to 16 chars; proc_name gives the full name.
             let name = processName(pid: pid, commFallback: cString(from: &proc.kp_proc.p_comm))
             rows.append(ProcessRow(pid: pid, name: name, ports: listeningPorts(pid: pid)))

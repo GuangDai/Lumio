@@ -6,9 +6,7 @@
 //  searches, `bookmark` ⇥ lists them all, and every bookmark folder becomes a tag of its own
 //  (a folder "Work" → `work` ⇥ lists and searches the bookmarks in it).
 //
-//  Read-only, local. Chromium browsers keep bookmarks in a `Bookmarks` JSON file per profile;
-//  Safari in ~/Library/Safari/Bookmarks.plist, readable once Lumio has Full Disk Access.
-//  Re-read only when a file changes.
+//  Reads the local `Bookmarks` JSON file of each Chromium browser profile when it changes.
 //
 
 import Foundation
@@ -40,7 +38,7 @@ nonisolated enum BrowserBookmarks {
         var seen = Set<String>()
         var out: [Bookmark] = []
         for source in files {
-            let found = source.isSafari ? readSafari(source.url) : readChromium(source.url, browser: source.browser)
+            let found = readChromium(source.url, browser: source.browser)
             for bookmark in found where seen.insert(bookmark.url).inserted {
                 out.append(bookmark)
             }
@@ -94,23 +92,12 @@ nonisolated enum BrowserBookmarks {
 
     // MARK: - Files
 
-    private struct Source {
-        let url: URL
-        let browser: String
-        let isSafari: Bool
-    }
-
-    private static func sources() -> [Source] {
-        var out = BrowserHistory.profiles().compactMap { profile -> Source? in
+    private static func sources() -> [(url: URL, browser: String)] {
+        BrowserHistory.profiles().compactMap { profile in
             let file = profile.dir.appendingPathComponent("Bookmarks")
             guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-            return Source(url: file, browser: profile.browser, isSafari: false)
+            return (url: file, browser: profile.browser)
         }
-        let safari = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Safari/Bookmarks.plist")
-        if FileManager.default.isReadableFile(atPath: safari.path) {
-            out.append(Source(url: safari, browser: "Safari", isSafari: true))
-        }
-        return out
     }
 
     private static func modified(_ url: URL) -> TimeInterval {
@@ -129,7 +116,9 @@ nonisolated enum BrowserBookmarks {
         var out: [Bookmark] = []
         func walk(_ node: [String: Any], path: [String]) {
             let name = node["name"] as? String ?? ""
-            if node["type"] as? String == "url", let url = node["url"] as? String {
+            if node["type"] as? String == "url", let url = node["url"] as? String,
+               BrowserOpening.webAddress(url) != nil
+            {
                 out.append(Bookmark(title: name.isEmpty ? url : name, url: url, folders: path, browser: browser, appPath: app))
             }
             for child in node["children"] as? [[String: Any]] ?? [] {
@@ -139,34 +128,6 @@ nonisolated enum BrowserBookmarks {
         for key in ["bookmark_bar", "other", "synced"] {
             if let root = roots[key] as? [String: Any] { walk(root, path: []) }
         }
-        return out
-    }
-
-    // MARK: - Safari: nested WebBookmarkTypeList / WebBookmarkTypeLeaf dictionaries
-
-    static func readSafari(_ file: URL) -> [Bookmark] {
-        guard let data = try? Data(contentsOf: file),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-        else { return [] }
-        let app = BrowserHistory.appPath(forDataFile: file)
-        var out: [Bookmark] = []
-        func walk(_ node: [String: Any], path: [String]) {
-            switch node["WebBookmarkType"] as? String {
-            case "WebBookmarkTypeLeaf":
-                guard let url = node["URLString"] as? String else { return }
-                let title = (node["URIDictionary"] as? [String: Any])?["title"] as? String ?? url
-                out.append(Bookmark(title: title, url: url, folders: path, browser: "Safari", appPath: app))
-            case "WebBookmarkTypeList":
-                let title = node["Title"] as? String ?? ""
-                // The Reading List is not bookmarks.
-                if title == "com.apple.ReadingList" { return }
-                let next = title.isEmpty ? path : path + [title == "BookmarksBar" ? "Favorites" : title]
-                for child in node["Children"] as? [[String: Any]] ?? [] { walk(child, path: next) }
-            default:
-                for child in node["Children"] as? [[String: Any]] ?? [] { walk(child, path: path) }
-            }
-        }
-        walk(plist, path: [])
         return out
     }
 

@@ -6,7 +6,7 @@
 //
 //  A synchronous MDQueryExecute blocks its thread until the query is gathered, and gathering
 //  needs another worker thread inside this process. The cooperative pool has one thread per
-//  CPU core. Typing fast starts one file search per keystroke; once that many are blocked at
+//  CPU core. Typing fast starts one folder search per keystroke; once that many are blocked at
 //  the same time, the queries wait for a thread the pool can never hand out, so they never
 //  return. Every other task queues behind them, the core search included: the launcher shows
 //  no results at all until it is restarted.

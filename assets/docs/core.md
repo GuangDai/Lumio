@@ -4,10 +4,10 @@ A Cargo workspace in `core/` (edition 2024, Rust 1.89+). Each crate has one job.
 
 | Crate | Role |
 | --- | --- |
-| `lumio-indexing` | The `Candidate` type (app, file, folder, setting, …) and its id scheme. Shared by every other crate. |
+| `lumio-indexing` | The `Candidate` type for apps, folders and settings, and its ID scheme. |
 | `lumio-matching` | Query normalization (case and accent folding) and fuzzy scoring. |
 | `lumio-ranking` | `rank_score`: adjusts a base match score using exact/prefix matches and usage history. |
-| `lumio-storage` | SQLite persistence: candidates, usage events, index state, and URL history. |
+| `lumio-storage` | SQLite persistence for candidates, usage events, and index state. |
 | `lumio-engine` | The query engine: config, discovery, search, scoring, modes. Depends on the crates above. |
 | `lumio-tools` | Preferred tools (editor, terminal): turns an action plus an object into something the platform can launch. |
 | `lumio-answers` | URL helpers. |
@@ -15,7 +15,7 @@ A Cargo workspace in `core/` (edition 2024, Rust 1.89+). Each crate has one job.
 ## Engine (`core/engine`)
 
 - `config.rs`, `config_path.rs`: parse `~/.lumio/config` into `RuntimeConfig`.
-- `index/`: discovery of candidates. `apps.rs`, `files.rs`, `settings.rs` each run on their own thread and stream `Candidate`s over a bounded channel.
+- `index/`: discovery of applications, folders and system settings.
 - `platform/`: per-OS discovery (`macos`, plus `linux` and `windows` code paths).
 - `query.rs`, `search.rs`, `scoring.rs`: parse a query, score candidates, keep the top-K in a heap, then re-rank a bounded pool.
 - `modes.rs`: the launch modes the app can open straight into (also used by the `lumio` shell command).
