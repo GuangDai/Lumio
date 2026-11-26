@@ -5,7 +5,7 @@
 # dev copy that is already running, and starts the new one.
 #
 #   lumiodev                  rebuild + restart + open
-#   lumiodev clipboard        rebuild + restart + open in a mode
+#   lumiodev process          rebuild + restart + open in a mode
 #   lumiodev --list-modes
 #   lumiodev --no-build ...   skip the rebuild, just restart the installed dev app
 #

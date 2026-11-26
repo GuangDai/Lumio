@@ -2,27 +2,11 @@
 //  SpotlightModes.swift
 //  lumio-app
 //
-//  The legacy launcher's tools, running inside the Spotlight launcher. Each one is a tab
-//  before OCR (see SpotlightKind.toolTabs); the old `x"` prefixes are gone:
-//
-//    Clipboard           — copied text and images in one list, newest first (ClipboardHistoryStore)
-//    Dictionary          — word lookup: system dictionary + EN/VI/JA translation
-//    Translate           — translate text into the languages chosen in Settings (Apple Translation)
-//    Processes           — find / measure CPU / force quit processes (ProcessFinderModel)
-//    :                   — command menu; :kill  :emptytrash  :help  (or ⌘/ opens the most recent command)
-//
-//  Reuses the legacy launcher's modules as-is; only the rows are built Spotlight-style.
-//
-
-import AppKit
-import CoreServices
+import Foundation
 
 enum SpotlightMode: Equatable {
     case search
     case commandMenu(filter: String)
-    case clipboard(term: String)
-    case lookup(word: String)
-    case translate(text: String)
     case process(term: String)
 
     /// Typed text outside a tool tab: only `:` (commands) is special.
@@ -34,22 +18,15 @@ enum SpotlightMode: Equatable {
 
     /// The mode a tool tab runs with the typed text. nil = not a tool tab with its own rows.
     static func forTab(_ tab: SpotlightKind, query: String) -> SpotlightMode? {
-        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch tab {
-        case .clip: return .clipboard(term: term)
-        case .lookup: return .lookup(word: term)
-        case .translation: return .translate(text: term)
-        case .process: return .process(term: term)
-        default: return nil
-        }
+        guard tab == .process else { return nil }
+        return .process(term: query.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     /// `lumio <mode>` still sends a prefixed query (from core): turn it into a tab + text.
     static func tab(fromLaunchQuery text: String) -> (tab: SpotlightKind?, text: String) {
         typealias P = AppConstants.Launcher.QueryPrefix
         let table: [(String, SpotlightKind)] = [
-            (P.clipboardImage, .clip), (P.clipboard, .clip), (P.translateWord, .lookup),
-            (P.translate, .translation), (P.process, .process),
+            (P.process, .process),
             (P.apps, .app), (P.folders, .folder), (P.files, .doc),
         ]
         let lower = text.lowercased()
@@ -64,9 +41,6 @@ enum SpotlightMode: Equatable {
         switch self {
         case .search: "⏎ open   ⇥ filter   ⌘K actions"
         case .commandMenu: "⏎ enter command"
-        case .clipboard: "⏎ copy   ⌘P pin   ⌘D delete"
-        case .lookup: "click a linked word to look it up"
-        case .translate: "⏎ copy translation"
         case .process: "⏎ measure CPU   ⌘K actions"
         }
     }
@@ -117,80 +91,6 @@ enum SpotlightModeRows {
         }
     }
 
-    /// Clipboard tab: copied text and images in one list, pinned first, then newest first,
-    /// one line each (like Maccy). Async because the text search runs in the core, off the
-    /// main thread; the rows carry titles only - a clip's text is loaded when it is used.
-    static func clipboardAll(_ store: ClipboardHistoryStore, term: String) async -> [SpotlightItem] {
-        let texts = await store.search(term)
-        // After the await, with the text: both lists are judged at the same moment.
-        let images = store.searchImages(term)
-        let rows = Array(zip(texts.map(\.capturedAt), clipboard(texts)))
-            + Array(zip(images.map(\.capturedAt), clipboardImages(images)))
-        return rows
-            .sorted { lhs, rhs in
-                if lhs.1.isPinned != rhs.1.isPinned { return lhs.1.isPinned }
-                return lhs.0 > rhs.0
-            }
-            .map(\.1)
-    }
-
-    static func clipboard(_ entries: [ClipboardHistoryEntry]) -> [SpotlightItem] {
-        entries.map { entry in
-            SpotlightItem(
-                id: "clip|\(entry.id.uuidString)", name: entry.title, kind: .clip,
-                colors: "#c3a6ff,#7a52d6",
-                symbol: "doc.on.clipboard", clipID: entry.id,
-                isPinned: entry.isPinned
-            )
-        }
-    }
-
-    static func clipboardImages(_ entries: [ClipboardImageEntry]) -> [SpotlightItem] {
-        entries.map { entry in
-            let size = ByteCountFormatter.string(fromByteCount: Int64(entry.byteSize), countStyle: .file)
-            return SpotlightItem(
-                id: "clipimage|\(entry.id)", name: entry.label, kind: .clipImage,
-                colors: "#c3a6ff,#7a52d6",
-                meta: "\(Int(entry.pixelSize.width))×\(Int(entry.pixelSize.height)) · \(size)",
-                target: entry.fileURL?.path, iconPath: entry.thumbnailURL?.path ?? entry.fileURL?.path,
-                symbol: "photo", payload: entry.id, isPinned: entry.isPinned
-            )
-        }
-    }
-
-    /// tw": the words starting with the typed text in the enabled dictionaries, like the
-    /// Dictionary.app sidebar. The typed text always comes first, even when no dictionary
-    /// has it (a phrase to translate).
-    static func lookup(_ word: String) -> [SpotlightItem] {
-        guard !word.isEmpty else { return [] }
-        var words = DictionaryLookupService.suggestions(for: word)
-        if let index = words.firstIndex(where: { $0.caseInsensitiveCompare(word) == .orderedSame }) {
-            words.insert(words.remove(at: index), at: 0)
-        } else {
-            words.insert(word, at: 0)
-        }
-        return words.map { headword in
-            SpotlightItem(
-                id: "lookup|\(headword)", name: headword, kind: .lookup,
-                colors: "#ffb36e,#f06a2e", meta: nil,
-                symbol: "character.book.closed", payload: headword
-            )
-        }
-    }
-
-    /// tr": one row per target language. The translations live in the view's state
-    /// (SpotlightTranslationBatch), so the rows stay put while they fill in.
-    static func translation(_ text: String, source: Locale.Language?) -> [SpotlightItem] {
-        guard !text.isEmpty else { return [] }
-        return TranslationLanguage.targets(from: source).map { language in
-            SpotlightItem(
-                id: "translate|\(language.code)", name: language.name, kind: .translation,
-                colors: "#7fb2ff,#3d63e0", meta: language.name,
-                symbol: "translate", payload: language.code
-            )
-        }
-    }
-
     static func processes(_ model: ProcessFinderModel, term: String) -> [SpotlightItem] {
         let lowered = term.lowercased()
         let ranked = model.ranked(term: term) { title in
@@ -231,9 +131,9 @@ enum SpotlightModeRows {
 
     /// `:help` — prefixes, commands and keyboard shortcuts of this launcher.
     static func help(_ filter: String) -> [SpotlightItem] {
-        let tabs = SpotlightKind.toolTabs.map { ($0.tabLabel + " tab", toolDetail($0)) }
+        let processTab = ("Processes tab", "Find and force quit running processes")
         let commands = AppConstants.Launcher.commandCatalog.map { (":" + $0.id, SpotlightCommands.detail(for: $0)) }
-        let entries = tabs + commands + helpShortcuts + [("⌘F", "Show in \(FileManagerApp.name)")] + quickLookHelp
+        let entries = [processTab] + commands + helpShortcuts + [("⌘F", "Show in \(FileManagerApp.name)")] + quickLookHelp
         let needle = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return entries
             .filter { needle.isEmpty || $0.0.lowercased().contains(needle) || $0.1.lowercased().contains(needle) }
@@ -245,65 +145,24 @@ enum SpotlightModeRows {
             }
     }
 
-    private static func toolDetail(_ tab: SpotlightKind) -> String {
-        switch tab {
-        case .clip: "Copied text and images, newest first"
-        case .lookup: "Lookup panel with definitions"
-        case .translation: "Translate text (\(TranslationLanguage.all.map(\.shortCode).joined(separator: " / ")), on-device)"
-        case .process: "Find & kill running processes"
-        default: tab.label
-        }
-    }
-
     /// Quick Look's key is set in Settings ▸ Shortcuts.
     private static var quickLookHelp: [(String, String)] {
         guard let combo = SpotlightQuickLook.shortcut else { return [] }
-        return [(combo.display, "Quick Look a document, image or clip (Space / \(combo.display) closes, ↑↓ browse)")]
+        return [(combo.display, "Quick Look a document or image (Space / \(combo.display) closes, ↑↓ browse)")]
     }
 
     private static let helpShortcuts: [(String, String)] = [
         ("⌘K", "Actions for the selected row"),
         ("⇥ / ⇧⇥", "Next / previous filter"),
-        ("⌘1 … ⌘4", "Browse Applications, Folders, Documents, OCR (text in images & PDFs)"),
+        ("⌘1 … ⌘4", "Browse Applications, Folders, Documents or Processes"),
         ("⌘↩", "Search the web"),
         ("⌘E", "Open in editor"),
         ("⌘T", "Open in terminal"),
-        ("⌘D", "Move to Trash · Empty Trash on the Trash pin · delete a clip"),
-        ("⌘P", "Pin or unpin a clip"),
+        ("⌘D", "Move to Trash · Empty Trash on the Trash pin"),
         ("⌘H", "This help"),
         ("⌘⇧H", "Hide the selected app from results"),
         ("⌘/", "Open the last command"),
         ("⌘⇧,", "Settings"),
         ("Esc", "Close"),
     ]
-
-    // MARK: - Translation (tw" bar, tr")
-
-    /// Translations of a word into the chosen languages, for the tw" bar.
-    static func fetchTranslations(_ word: String) async -> [SpotlightTranslation] {
-        let languages = TranslationLanguage.all
-        let source = TextTranslator.detectLanguage(of: word, likely: languages)
-        let results = await translate(word, from: source, to: languages)
-        return languages.map { language in
-            SpotlightTranslation(label: language.name, code: language.shortCode, text: results[language.code]?.text)
-        }
-    }
-
-    /// Translates `text` into every target at once. Keyed by language code; a missing code failed.
-    static func translate(
-        _ text: String,
-        from source: Locale.Language?,
-        to targets: [TranslationLanguage]
-    ) async -> [String: TextTranslation] {
-        await withTaskGroup(of: (String, TextTranslation?).self) { group in
-            for target in targets {
-                group.addTask { (target.code, await TextTranslator.translate(text, from: source, to: target)) }
-            }
-            var results: [String: TextTranslation] = [:]
-            for await (code, translation) in group {
-                results[code] = translation
-            }
-            return results
-        }
-    }
 }

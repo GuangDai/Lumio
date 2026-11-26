@@ -1,16 +1,16 @@
 # Rust core
 
-A Cargo workspace in `core/` (edition 2024, Rust 1.88+). Each crate has one job.
+A Cargo workspace in `core/` (edition 2024, Rust 1.89+). Each crate has one job.
 
 | Crate | Role |
 | --- | --- |
 | `lumio-indexing` | The `Candidate` type (app, file, folder, setting, …) and its id scheme. Shared by every other crate. |
 | `lumio-matching` | Query normalization (case and accent folding) and fuzzy scoring. |
 | `lumio-ranking` | `rank_score`: adjusts a base match score using exact/prefix matches and usage history. |
-| `lumio-storage` | SQLite persistence: candidates, usage events, index state, URL history, clipboard entries. |
+| `lumio-storage` | SQLite persistence: candidates, usage events, index state, and URL history. |
 | `lumio-engine` | The query engine: config, discovery, search, scoring, modes. Depends on the crates above. |
 | `lumio-tools` | Preferred tools (editor, terminal): turns an action plus an object into something the platform can launch. |
-| `lumio-answers` | URL helpers and text translation over HTTP. |
+| `lumio-answers` | URL helpers. |
 
 ## Engine (`core/engine`)
 

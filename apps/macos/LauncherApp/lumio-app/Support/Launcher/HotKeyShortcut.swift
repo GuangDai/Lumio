@@ -2,10 +2,9 @@ import AppKit
 import Carbon
 
 /// What a shortcut does. Saved as `hotkey_<rawValue>=cmd+shift+v` in the config
-/// (empty value = off). The tab actions use `SpotlightKind` raw values. All are global
-/// except `quickLook`, which only works while the launcher is open (see `isGlobal`).
+/// An empty value turns it off. Quick Look works only while the launcher is open.
 nonisolated enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
-    case launcher, settings, clip, lookup, translation, process, content
+    case launcher, settings, process
     case quickLook = "quicklook"
     // Open the launcher already inside a search tag (the part after `tag_` is the tag's keyword).
     case tagFiles = "tag_files", tagDownloads = "tag_downloads", tagPSD = "tag_psd"
@@ -19,11 +18,7 @@ nonisolated enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .launcher: "Open Lumio"
         case .settings: "Settings"
-        case .clip: "Clipboard"
-        case .lookup: "Dictionary"
-        case .translation: "Translate"
         case .process: "Processes"
-        case .content: "OCR"
         case .quickLook: "Quick Look"
         case .tagFiles: "Search files"
         case .tagDownloads: "Search Downloads"
@@ -38,11 +33,7 @@ nonisolated enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .launcher: "Show or hide the launcher"
         case .settings: "Open this window"
-        case .clip: "Open the launcher on clipboard history"
-        case .lookup: "Look up the selected text, or open Dictionary"
-        case .translation: "Translate the selected text, or open Translate"
         case .process: "Open the launcher on running processes"
-        case .content: "Search text in images & PDFs"
         case .quickLook: "Preview the selected row (in the launcher)"
         case .tagFiles: "Open the launcher with the files tag on"
         case .tagDownloads: "Open the launcher inside your Downloads folder"
@@ -59,7 +50,7 @@ nonisolated enum HotKeyAction: String, CaseIterable, Identifiable, Sendable {
     /// grabbing ⌘Y everywhere would take it from every other app.
     var isGlobal: Bool { self != .quickLook }
 
-    /// Option+Space and Cmd+Shift+Space, as before; the tab shortcuts start off.
+    /// Default shortcuts for the launcher, Settings, and Quick Look.
     var defaultValue: String {
         switch self {
         case .launcher: "opt+space"

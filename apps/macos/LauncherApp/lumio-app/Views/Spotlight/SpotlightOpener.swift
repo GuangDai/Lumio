@@ -25,16 +25,6 @@ enum SpotlightOpener {
 
     static func open(_ item: SpotlightItem) -> Outcome {
         switch item.kind {
-        case .calc:
-            // A conversion carries its answer as text ("3.11 mi").
-            if let text = item.payload {
-                copy(text)
-                return .message("Copied \(text)")
-            }
-            guard let value = item.calcResult else { return .message("Couldn't calculate") }
-            let text = SpotlightCalc.format(value)
-            copy(text)
-            return .message("Copied \(text)")
         case .web:
             // A search tag's row carries its own address (YouTube, Drive…); plain rows use Google.
             if let target = item.target {
@@ -53,14 +43,10 @@ enum SpotlightOpener {
             let url = target
             Task.detached(priority: .utility) { _ = EngineBridge.shared.recordURLHit(url: url) }
             return .launched
-        case .app, .setting, .doc, .content, .folder:
+        case .app, .setting, .doc, .folder:
             return openTarget(of: item)
-        case .clip:
-            guard let text = item.payload else { return .message("Nothing to copy") }
-            copy(text)
-            return .message("Copied")
-        case .cmd, .prefix, .command, .clipImage, .lookup, .translation, .process, .help, .tagHint, .window:
-            // These modes need view state (store, model): the view handles them.
+        case .cmd, .prefix, .command, .process, .help, .tagHint, .window:
+            // The view handles rows that depend on its state.
             return .message("Nothing to open")
         }
     }
@@ -102,9 +88,6 @@ enum SpotlightOpener {
             }
             FileManagerApp.reveal(target)
             return .launched
-        case .copyPath:
-            copy(target)
-            return .message("Copied path")
         case .hideApp:
             guard let app = runningApp(at: target) else { return .message("\(item.name) isn't running") }
             app.hide()
@@ -113,7 +96,7 @@ enum SpotlightOpener {
             guard let app = runningApp(at: target) else { return .message("\(item.name) isn't running") }
             app.terminate()
             return .launched
-        case .measureCPU, .killProcess, .copyPID,
+        case .measureCPU, .killProcess,
              .openInEditor, .openInTerminal, .moveToTrash, .emptyTrash, .excludeApp:
             // Need view state (process model, confirmation, async tool run): the view handles them.
             return .message("Not applicable")
@@ -178,11 +161,6 @@ enum SpotlightOpener {
         NSWorkspace.shared.open(url)
     }
 
-    private static func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
     private static func isURLScheme(_ target: String) -> Bool {
         target.contains(":") && !target.hasPrefix("/")
     }
@@ -191,7 +169,7 @@ enum SpotlightOpener {
     private static func recordUsage(_ item: SpotlightItem) {
         guard let candidateID = item.candidateID else { return }
         let action = switch item.kind {
-        case .doc, .content: "open_file"
+        case .doc: "open_file"
         case .folder: "open_folder"
         default: "open_app"
         }

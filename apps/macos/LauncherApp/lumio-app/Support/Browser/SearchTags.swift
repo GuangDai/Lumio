@@ -48,8 +48,7 @@ nonisolated struct SearchTag: Equatable, Sendable {
     var history = false
     /// Came from the browser (a saved search engine or a bookmark folder), not built in.
     var fromBrowser = false
-    /// Switches to one of Lumio's own tabs instead of locking a chip (`apps`, `content`,
-    /// `clipboard`…): the tab's SpotlightKind raw value.
+    /// The `SpotlightKind` raw value to select in the launcher, such as Applications or Processes.
     var mode: String? = nil
     /// `settings` tag: System Settings panes only.
     var settingsOnly = false
@@ -173,8 +172,6 @@ enum SearchTags {
                   domain: "claude.ai", symbol: "sparkle", colors: "#f4b183,#d97757"),
         SearchTag(keyword: "gimg", name: "Google Images", urlTemplate: "https://www.google.com/search?tbm=isch&q={query}",
                   domain: nil, symbol: "photo.fill", colors: "#8fb8ff,#3a6fd8"),
-        SearchTag(keyword: "tr", name: "Google Translate", urlTemplate: "https://translate.google.com/?text={query}",
-                  domain: "translate.google.com", symbol: "character.bubble.fill", colors: "#8fb8ff,#3a6fd8"),
         SearchTag(keyword: "spotify", name: "Spotify", urlTemplate: "https://open.spotify.com/search/{query}",
                   domain: "open.spotify.com", symbol: "music.note", colors: "#7fe09a,#1db954"),
         SearchTag(keyword: "figma", name: "Figma", urlTemplate: "https://www.figma.com/files/search?q={query}",
@@ -207,18 +204,11 @@ enum SearchTags {
                       colors: "#9aa8ff,#4a4fd6", windows: true),
             mode("apps", "Applications", "app", "square.grid.2x2.fill"),
             mode("app", "Applications", "app", "square.grid.2x2.fill"),
-            // Fluent's `content` tag: words inside documents (Spotlight's text index). `ocr` is
-            // Lumio's own tab for text inside images and scanned PDFs.
+            // Fluent's `content` tag searches words inside documents through the Spotlight index.
             SearchTag(keyword: "content", name: "File contents", urlTemplate: "", domain: nil,
                       symbol: "text.magnifyingglass", colors: "#a7aeb8,#5e6670",
                       files: FileScope(contentSearch: true)),
-            mode("ocr", "Text in images & PDFs", "content", "text.viewfinder"),
-            mode("clipboard", "Clipboard", "clip", "doc.on.clipboard"),
-            mode("clip", "Clipboard", "clip", "doc.on.clipboard"),
             mode("process", "Processes", "process", "cpu"),
-            mode("dictionary", "Dictionary", "lookup", "character.book.closed"),
-            mode("define", "Dictionary", "lookup", "character.book.closed"),
-            mode("translate", "Translate", "translation", "translate"),
             SearchTag(keyword: "bing", name: "Bing", urlTemplate: "https://www.bing.com/search?q={query}",
                       domain: "bing.com", symbol: "magnifyingglass", colors: "#7fd3e0,#0f7d8c"),
             SearchTag(keyword: "ddg", name: "DuckDuckGo", urlTemplate: "https://duckduckgo.com/?q={query}",

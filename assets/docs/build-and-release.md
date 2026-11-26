@@ -30,23 +30,14 @@ cargo test --manifest-path bridge/ffi/Cargo.toml
 ./scripts/build.sh v1.2.3     # same, with the version shown in About
 ```
 
+## GitHub Actions
+
+The CI workflow runs on pushes to `main`, pull requests targeting `main`, and manual dispatch. Download the `Lumio-macOS-arm64` artifact from a successful run for the ad-hoc signed app packaged as a DMG.
+
 ## Releasing (maintainers)
 
 ```bash
 ./scripts/release.sh v1.2.3
 ```
 
-`release.sh` refuses a dirty tree or a commit that is not on `origin/main`, runs the cargo tests and `build.sh`, then pushes the `v*` tag. That tag starts `.github/workflows/release.yml`, which:
-
-1. builds `Lumio.dmg` with `build.sh`,
-2. publishes the GitHub release,
-3. runs `notify-update.sh` (the `notify-users` job).
-
-`notify-update.sh` reaches users two ways:
-
-- **Sparkle**: adds the release to `lumio/appcast.xml` in [cavaldos/macos-app-releases](https://github.com/cavaldos/macos-app-releases) (shared with other apps), served at `https://cavaldos.github.io/macos-app-releases/lumio/appcast.xml`. Lumio v0.0.5 and older still read `cavaldos/lumio-releases`, so the appcast is mirrored there too; once most users have updated, set `LEGACY_REPO=""` in `scripts/notify-update.sh`, drop `LUMIO_RELEASES_DEPLOY_KEY`, and delete that repo.
-- **Homebrew**: points the `lumio` cask in [cavaldos/homebrew-tap](https://github.com/cavaldos/homebrew-tap) at the new DMG.
-
-Rules: the version comes from the tag (`vX.Y.Z`), is never reused, and must be newer than the last release. Updates are EdDSA-signed; never rotate the key, or installed apps will reject updates. The `notify-users` job needs the secrets `SPARKLE_PRIVATE_KEY`, `MACOS_APP_RELEASES_DEPLOY_KEY`, `LUMIO_RELEASES_DEPLOY_KEY` and `HOMEBREW_TAP_DEPLOY_KEY`.
-
-CI (`ci.yml`) is manual only (`workflow_dispatch`).
+`release.sh` requires a clean worktree and a commit on `origin/main`. It runs the Rust tests and the local DMG build, then pushes the version tag. The Release workflow builds and attaches the DMG to the fork's GitHub release.

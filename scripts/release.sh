@@ -1,8 +1,7 @@
 #!/bin/bash
 # Release Lumio: run the checks, then tag + push. The tag starts
 # .github/workflows/release.yml, which builds Lumio.dmg on GitHub
-# (scripts/build.sh), publishes the GitHub Release and runs
-# scripts/notify-update.sh so users get the update (in-app + Homebrew).
+# (scripts/build.sh) and publishes the GitHub Release.
 #
 # Usage: ./scripts/release.sh vX.Y.Z [--skip-checks]
 #   --skip-checks  skip the local cargo tests + Release build (CI builds anyway)
@@ -74,6 +73,4 @@ if ! git push origin "$TAG"; then
 fi
 
 echo
-echo "Pushed $TAG. GitHub Actions now builds Lumio.dmg, publishes the release"
-echo "and updates the Homebrew cask:"
-echo "  https://github.com/cavaldos/Lumio/actions/workflows/release.yml"
+echo "Pushed $TAG. GitHub Actions now builds Lumio.dmg and publishes it to the release."

@@ -59,23 +59,13 @@ enum AppConstants {
 
 
 
-        // Query prefixes the core still understands. The launcher no longer takes them
-        // typed: each is a tab (SpotlightKind.toolTabs); `lumio <mode>` still sends them.
+        // Query prefixes sent by the command-line modes.
         enum QueryPrefix {
             static let apps = "a\""
             static let files = "f\""
             static let folders = "d\""
-            static let clipboard = "c\""
-            // Copied images (see LauncherClipboardImageFeature).
-            static let clipboardImage = "ci\""
-            // Dictionary prefix (handled in LauncherView+Translation).
-            static let translateWord = "tw\""
-            // Translate text with Apple Translation (Spotlight launcher only, see TextTranslator).
-            static let translate = "tr\""
-            // Live process finder (handled in LauncherView+Process): fuzzy over
-            // running processes, kill / copy-PID / measure-CPU from the results.
+            // Find running processes, inspect CPU usage, and force quit.
             static let process = "ps\""
-
         }
 
 
@@ -143,59 +133,6 @@ enum AppConstants {
                 QuickFolderDefinition(
                     title: "Trash", location: .home(".Trash"), subtitle: "Pinned · ⌘D to empty"),
             ]
-        }
-
-        /// `nonisolated`: read by the writer that stores a clip off the main
-        /// thread.
-        nonisolated enum Clipboard {
-            /// The `kind` column's values. Must match core/storage.
-            static let textKind = "text"
-            static let imageKind = "image"
-            // How many clips history keeps. `maxEntries` is the default/fallback used
-            // when `clipboard_history_limit` in ~/.lumio/config is absent or out of the
-            // [minEntries, maxEntriesLimit] range (see ClipboardLimits). It is trimmed
-            // on disk too, not only in memory. `maxEntriesLimit` must stay within
-            // core/storage's MAX_CLIPBOARD_ROWS backstop.
-            static let maxEntries = 300
-            static let minEntries = 10
-            static let maxEntriesLimit = 1000
-            static let historyLimitConfigKey = "clipboard_history_limit"
-            static let maxStoredCharacters = 30_000
-            /// How much of a clip stays in memory with its row: enough for the one-line
-            /// title (`maxTitleCharacters`, with room for whitespace that collapses). The
-            /// rest lives in SQLite and is loaded when the clip is pasted or previewed.
-            static let previewCharacters = 300
-            /// Row label length; longer clips are elided.
-            static let maxTitleCharacters = 80
-            static let emptyEntryTitle = "(Empty text)"
-            static let foregroundPollInterval: TimeInterval = 0.35
-            /// While the launcher is hidden; a copy only needs to be seen before the next one.
-            static let backgroundPollInterval: TimeInterval = 1.5
-            static let burstPollInterval: TimeInterval = 0.08
-            static let burstSampleCount = 10
-        }
-
-        /// The `ci"` history. Shares rows and storage with Clipboard above;
-        /// only the capture limits and the labels differ.
-        nonisolated enum ClipboardImage {
-            /// The fallback when `clipboard_image_limit` in ~/.lumio/config is
-            /// absent or out of range.
-            static let maxEntries = 20
-            static let minEntries = 5
-            static let maxEntriesLimit = 50
-            static let limitConfigKey = "clipboard_image_limit"
-            /// Past this a paste is not a clip worth keeping a copy of.
-            static let maxImageBytes = 20 * 1024 * 1024
-            /// Bytes say nothing about what they decode to, at four bytes a
-            /// pixel. Clears an 8K screenshot and bounds the decode.
-            static let maxPixelCount = 64_000_000
-            /// Longest edge of the row thumbnail.
-            static let thumbnailMaxPixel: CGFloat = 128
-            static let fileExtension = "png"
-            /// Core sweeps by hash prefix, so any suffix here is safe.
-            static let thumbnailSuffix = ".thumb"
-            static let unnamedLabelPrefix = "Image from"
-            static let unnamedLabelFallbackSource = "screen"
         }
 
         /// How long the launcher may stay hidden before the next open returns

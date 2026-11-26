@@ -5,7 +5,7 @@ Lumio is a native SwiftUI app on top of a Rust core. Swift owns everything the u
 ```text
 ┌──────────────────────────────────────────────┐
 │ macOS app (Swift / SwiftUI)                  │  apps/macos/LauncherApp
-│ panel window, views, hotkey, OCR, updates    │
+│ panel window, views, hotkey, file search     │
 └──────────────────────┬───────────────────────┘
                        │ C ABI, JSON strings
 ┌──────────────────────▼───────────────────────┐
@@ -29,7 +29,7 @@ core/                     Rust workspace: engine, indexing, matching, ranking, s
 bridge/ffi/               Rust crate that exposes the core to Swift
 scripts/                  build.sh, release.sh, notify-update.sh, lumiodev, Makefile.mac
 tools/perf/               benchmarks (separate crate, never bundled)
-assets/                   app icon, UI screenshots, these docs
+assets/                   app icon and these docs
 ```
 
 ## Life of a keystroke
@@ -47,13 +47,11 @@ Searches are in-memory. SQLite is only touched to load the index at startup and 
 | Data | Location |
 | --- | --- |
 | Settings | `~/.lumio/config` |
-| Candidates, usage, clipboard history | SQLite, `~/Library/Application Support/lumio/` |
-| OCR text | `~/Library/Application Support/lumio/content-index.db` |
+| Candidates, usage, web search history | SQLite, `~/Library/Application Support/lumio/` |
 
 ## Further reading
 
 - [Rust core](core.md)
 - [FFI bridge](ffi-bridge.md)
 - [macOS app](macos-app.md)
-- [OCR search](ocr-search.md)
 - [Build and release](build-and-release.md)

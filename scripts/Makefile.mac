@@ -11,18 +11,6 @@ APP_PROCESS := Lumio
 APP_BUNDLE := $(XCODE_DERIVED_DATA)/Build/Products/$(XCODE_CONFIG)/Lumio.app
 APP_DEBUG_DYLIB := $(APP_BUNDLE)/Contents/MacOS/Lumio.debug.dylib
 
-# The Xcode "Build Rust FFI" phase declares this .a as an output and declares NO
-# inputs, so Xcode skips the phase whenever the file exists and a Rust change
-# ships as a silently stale lib (this is how a build predating `"think": false`
-# reached a reasoning model and returned empty answers). `ffi-unstale` deletes
-# it whenever the BUILD IDENTITY changes, not merely when a source is newer.
-# Identity covers three things a timestamp check misses: the manifests (a
-# dependency bump changes no .rs), deletions (removing a file makes nothing
-# newer), and the CONFIGURATION - the phase copies debug and release output to
-# the SAME path, so switching profiles would otherwise link the wrong one.
-FFI_STATIC_LIB := apps/macos/LauncherApp/RustBuild/liblumio_ffi.a
-FFI_STAMP := apps/macos/LauncherApp/RustBuild/.build-identity
-RUST_SOURCE_DIRS := core bridge
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 DEV_APP_NAME ?= Lumio Dev
@@ -36,7 +24,7 @@ REAL_DB_PATH := $(HOME)/Library/Application Support/lumio/lumio.db
 DEV_CONFIG_PATH ?= $(HOME)/.lumio/config.dev
 DEV_OPEN_ENV = env -u LUMIO_DB_PATH LUMIO_CONFIG_PATH="$(DEV_CONFIG_PATH)" LUMIO_DEV_HINT=1 LUMIO_LOG_LEVEL=debug LUMIO_UI_DEBUG_EVENTS=1
 
-.PHONY: help core-check ffi-check ffi-build ffi-build-release ffi-unstale app-build app-ensure-bundle app-stop app-run app-install-dev app-run-dev app-uninstall-dev dev-cli app-logs app-logs-all symbols db-path db-status db-shell db-reset db-refresh icons
+.PHONY: help core-check ffi-check ffi-build ffi-build-release app-build app-ensure-bundle app-stop app-run app-install-dev app-run-dev app-uninstall-dev dev-cli app-logs app-logs-all symbols db-path db-status db-shell db-reset db-refresh icons
 
 help:
 	@printf "lumio developer tasks\n\n"
@@ -46,7 +34,6 @@ help:
 	@printf "  make ffi-build          - build the ffi crate alone (link check; the app builds its own)\n"
 	@printf "  make ffi-build-release  - same, release profile\n"
 	@printf "  make app-build          - xcodebuild app (macOS, includes rust ffi build/link)\n"
-	@printf "  make ffi-unstale        - drop RustBuild/liblumio_ffi.a when the Rust build identity changes\n"
 	@printf "  make symbols            - verify ffi symbols in app binary\n\n"
 	@printf "run app\n"
 	@printf "  make app-stop     - stop running Lumio app process\n"
@@ -79,28 +66,14 @@ ffi-build:
 ffi-build-release:
 	cargo build --manifest-path bridge/ffi/Cargo.toml --release
 
-ffi-unstale:
-	@identity="$(XCODE_CONFIG) $$(find $(RUST_SOURCE_DIRS) \
-		\( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
-		-not -path '*/target/*' -print0 2>/dev/null \
-		| sort -z | xargs -0 shasum 2>/dev/null | shasum | cut -d' ' -f1)"; \
-	if [ "$$identity" != "$$(cat "$(FFI_STAMP)" 2>/dev/null)" ]; then \
-		if [ -f "$(FFI_STATIC_LIB)" ]; then \
-			echo "Rust build identity changed; dropping $(FFI_STATIC_LIB)"; \
-			rm -f "$(FFI_STATIC_LIB)"; \
-		fi; \
-		mkdir -p "$$(dirname "$(FFI_STAMP)")"; \
-		printf '%s' "$$identity" > "$(FFI_STAMP)"; \
-	fi
-
-app-build: ffi-unstale
+app-build:
 	xcodebuild -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -configuration "$(XCODE_CONFIG)" -derivedDataPath "$(XCODE_DERIVED_DATA)" build
 
 app-ensure-bundle:
 	@if [ ! -d "$(APP_BUNDLE)" ]; then echo "missing app bundle: $(APP_BUNDLE)"; exit 1; fi
 
 app-stop:
-	@echo "Stopping any running Lumio app (including Homebrew install)"
+	@echo "Stopping any running Lumio app"
 	@osascript -e 'tell application id "$(APP_ID)" to quit' >/dev/null 2>&1 || true
 	@pkill -x "$(APP_PROCESS)" >/dev/null 2>&1 || true
 

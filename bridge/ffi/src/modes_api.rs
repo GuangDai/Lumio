@@ -16,7 +16,7 @@ pub(crate) fn lumio_modes_list_text_impl() -> *mut c_char {
 }
 
 /// Argv in as a JSON array (program name already dropped), the decision out as
-/// `{"kind":"normal"|"query"|"list_modes"|"unknown_mode"|"unavailable_mode", ...}`.
+/// `{"kind":"normal"|"query"|"list_modes"|"unknown_mode", ...}`.
 pub(crate) fn lumio_modes_parse_json_impl(argv_json: *const c_char) -> *mut c_char {
     if argv_json.is_null() {
         return allocate(NULL_JSON.to_string());
@@ -34,9 +34,6 @@ pub(crate) fn lumio_modes_parse_json_impl(argv_json: *const c_char) -> *mut c_ch
         modes::Launch::Query { text } => serde_json::json!({ "kind": "query", "text": text }),
         modes::Launch::UnknownMode(name) => {
             serde_json::json!({ "kind": "unknown_mode", "name": name })
-        }
-        modes::Launch::UnavailableMode(name) => {
-            serde_json::json!({ "kind": "unavailable_mode", "name": name })
         }
     };
     allocate(value.to_string())
@@ -56,36 +53,24 @@ mod tests {
 
     #[test]
     fn a_mode_name_becomes_its_query() {
-        let parsed = parse(&["clipboard", "pass"]);
+        let parsed = parse(&["files", "report"]);
 
         assert_eq!(parsed["kind"], "query");
-        assert_eq!(parsed["text"], "c\"pass");
+        assert_eq!(parsed["text"], "f\"report");
     }
 
     #[test]
     fn an_unrecognised_word_stays_a_normal_launch() {
-        assert_eq!(parse(&["clipbaord"])["kind"], "normal");
+        assert_eq!(parse(&["unknown"])["kind"], "normal");
         assert_eq!(parse(&[])["kind"], "normal");
     }
 
     #[test]
     fn an_explicit_unknown_mode_reports_the_name() {
-        let parsed = parse(&["--mode", "clipbaord"]);
+        let parsed = parse(&["--mode", "unknown"]);
 
         assert_eq!(parsed["kind"], "unknown_mode");
-        assert_eq!(parsed["name"], "clipbaord");
-    }
-
-    #[test]
-    fn a_mode_this_platform_lacks_crosses_as_its_own_kind() {
-        let parsed = parse(&["dictionary"]);
-        let expected = if cfg!(target_os = "macos") {
-            "query"
-        } else {
-            "unavailable_mode"
-        };
-
-        assert_eq!(parsed["kind"], expected);
+        assert_eq!(parsed["name"], "unknown");
     }
 
     #[test]
@@ -115,7 +100,7 @@ mod tests {
         let text = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
         crate::lumio_free_cstring(ptr);
 
-        assert!(text.contains("clipboard"));
-        assert!(text.contains("macOS only"));
+        assert!(text.contains("files"));
+        assert!(text.contains("processes"));
     }
 }

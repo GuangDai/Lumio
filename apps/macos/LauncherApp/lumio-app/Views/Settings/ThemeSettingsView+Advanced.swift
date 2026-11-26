@@ -28,8 +28,6 @@ extension ThemeSettingsView {
                     case .indexing: indexingSection
                     case .shortcuts: shortcutsSection
                     case .tabs: tabsSection
-                    case .clipboard: clipboardSection
-                    case .translation: translationSection
                     }
                 }
                 .padding(.bottom, 8)
@@ -40,12 +38,6 @@ extension ThemeSettingsView {
             }
             .onChange(of: settings.fileScanLimit) { _, _ in
                 fileScanLimitInput = String(settings.fileScanLimit)
-            }
-            .onChange(of: settings.clipboardHistoryLimit) { _, _ in
-                clipboardHistoryLimitInput = String(settings.clipboardHistoryLimit)
-            }
-            .onChange(of: settings.clipboardImageLimit) { _, _ in
-                clipboardImageLimitInput = String(settings.clipboardImageLimit)
             }
 
             Text(HintText.Settings.advancedApply)
@@ -182,71 +174,21 @@ extension ThemeSettingsView {
 
     @ViewBuilder
     private var tabsSection: some View {
+        let processCode = SpotlightKind.process.rawValue
         SettingsSectionTitle("Launcher tabs")
         SettingsCard {
-            tabOrderRow
+            SettingsToggleRow(
+                "Show Processes tab", icon: "rectangle.3.group",
+                detail: "Include Processes in the tab row and tab cycle",
+                isOn: Binding(
+                    get: { !settings.hiddenTabs.contains(processCode) },
+                    set: { settings.hiddenTabs = HiddenTabs.setting(processCode, shown: $0, in: settings.hiddenTabs) }
+                )
+            )
         }
         SettingsSectionTitle("Round buttons")
         SettingsCard {
             quickBubblesRow
-        }
-    }
-
-    @ViewBuilder
-    private var clipboardSection: some View {
-        SettingsSectionTitle("Clipboard")
-        SettingsCard {
-            SettingsRow(
-                "Clips to keep",
-                detail: clipboardHistoryLimitError
-                    ?? "Text clips, \(ClipboardLimits.textRange.lowerBound)-\(ClipboardLimits.textRange.upperBound). Older ones are deleted; pinned clips stay"
-            ) {
-                TextField("\(ClipboardLimits.Text.maxEntries)", text: $clipboardHistoryLimitInput)
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 80)
-                    .onChange(of: clipboardHistoryLimitInput) { _, value in
-                        clipboardHistoryLimitInput = sanitizedNumericInput(value)
-                        if let parsed = Int(clipboardHistoryLimitInput) {
-                            if ClipboardLimits.textRange.contains(parsed) {
-                                settings.clipboardHistoryLimit = parsed
-                                clipboardHistoryLimitError = nil
-                            } else {
-                                clipboardHistoryLimitError = "Must be \(ClipboardLimits.textRange.lowerBound)-\(ClipboardLimits.textRange.upperBound)"
-                            }
-                        }
-                    }
-            }
-            SettingsDivider()
-            SettingsRow(
-                "Images to keep",
-                detail: clipboardImageLimitError
-                    ?? "Image clips, \(ClipboardLimits.imageRange.lowerBound)-\(ClipboardLimits.imageRange.upperBound). Each one is a file on disk"
-            ) {
-                TextField("\(ClipboardLimits.Image.maxEntries)", text: $clipboardImageLimitInput)
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 80)
-                    .onChange(of: clipboardImageLimitInput) { _, value in
-                        clipboardImageLimitInput = sanitizedNumericInput(value)
-                        if let parsed = Int(clipboardImageLimitInput) {
-                            if ClipboardLimits.imageRange.contains(parsed) {
-                                settings.clipboardImageLimit = parsed
-                                clipboardImageLimitError = nil
-                            } else {
-                                clipboardImageLimitError = "Must be \(ClipboardLimits.imageRange.lowerBound)-\(ClipboardLimits.imageRange.upperBound)"
-                            }
-                        }
-                    }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var translationSection: some View {
-        SettingsSectionTitle("Languages")
-        SettingsCard {
-            translationLanguagesRow
         }
     }
 
@@ -356,64 +298,12 @@ extension ThemeSettingsView {
         }
     }
 
-    /// The launcher's tool tabs in their current order, each with arrows to move it.
-    var tabOrderRow: some View {
-        let order = TabOrder.normalized(settings.tabOrder)
-        return SettingsRow(
-            "Tab order", icon: "rectangle.3.group",
-            detail: "Order of the tabs after All in the launcher. The eye hides a tab from the pill row and from Tab"
-        ) {
-            if order != TabOrder.defaultCodes || !settings.hiddenTabs.isEmpty {
-                Button("Reset") {
-                    settings.tabOrder = TabOrder.defaultCodes
-                    settings.hiddenTabs = []
-                }
-            }
-        } below: {
-            HStack(spacing: 8) {
-                ForEach(Array(order.enumerated()), id: \.element) { index, code in
-                    tabOrderChip(code: code, isFirst: index == 0, isLast: index == order.count - 1)
-                }
-            }
-        }
-    }
-
-    private func tabOrderChip(code: String, isFirst: Bool, isLast: Bool) -> some View {
-        let shown = !settings.hiddenTabs.contains(code)
-        return HStack(spacing: 4) {
-            tabOrderArrow("chevron.left", disabled: isFirst) {
-                settings.tabOrder = TabOrder.moving(code, by: -1, in: settings.tabOrder)
-            }
-            Text(SpotlightKind(rawValue: code)?.tabLabel ?? code)
-                .lineLimit(1)
-                .font(themeStore.uiFont(size: CGFloat(AppConstants.ThemeUI.fontSize - 2), weight: .semibold))
-                .foregroundStyle(themeStore.fontColor())
-                .strikethrough(!shown)
-                .opacity(shown ? 1 : 0.45)
-                // The chips share the row, so long names get cut: hover shows the whole name.
-                .help(SpotlightKind(rawValue: code)?.tabLabel ?? code)
-            tabOrderArrow(shown ? "eye" : "eye.slash", disabled: false) {
-                settings.hiddenTabs = TabOrder.setting(code, shown: !shown, in: settings.hiddenTabs)
-            }
-            .help(shown ? "Hide this tab" : "Show this tab")
-            tabOrderArrow("chevron.right", disabled: isLast) {
-                settings.tabOrder = TabOrder.moving(code, by: 1, in: settings.tabOrder)
-            }
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
-        .background(
-            themeStore.liftColor(opacity: Self.activeFillOpacity),
-            in: RoundedRectangle(cornerRadius: themeStore.controlRadius, style: .continuous)
-        )
-    }
-
     /// The idle bar's round buttons: what each one opens (menu) and their order (arrows).
     var quickBubblesRow: some View {
         let slots = QuickBubbles.normalized(settings.quickBubbles)
         return SettingsRow(
             "Round buttons", icon: "circle.grid.2x2",
-            detail: "What the 4 buttons beside the empty search bar open, in order (⌘1-⌘4)"
+            detail: "What the buttons beside the empty search bar open, in order (⌘1–⌘\(slots.count))"
         ) {
             if slots != QuickBubbles.defaultCodes {
                 Button("Reset") {
@@ -432,7 +322,7 @@ extension ThemeSettingsView {
     private func quickBubbleChip(slot: Int, code: String, isLast: Bool) -> some View {
         let kind = SpotlightKind(rawValue: code)
         return HStack(spacing: 4) {
-            tabOrderArrow("chevron.left", disabled: slot == 0) {
+            quickBubbleArrow("chevron.left", disabled: slot == 0) {
                 settings.quickBubbles = QuickBubbles.moving(slot: slot, by: -1, in: settings.quickBubbles)
             }
             Menu {
@@ -441,14 +331,14 @@ extension ThemeSettingsView {
                     Button {
                         settings.quickBubbles = QuickBubbles.setting(slot: slot, to: choice, in: settings.quickBubbles)
                     } label: {
-                        Label(option?.quickLabel ?? choice, systemImage: choice == code ? "checkmark" : (option?.quickIcon ?? "circle"))
+                        Label(option?.label ?? choice, systemImage: choice == code ? "checkmark" : (option?.quickIcon ?? "circle"))
                     }
                 }
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: kind?.quickIcon ?? "circle")
                         .font(.system(size: 11, weight: .semibold))
-                    Text(kind?.quickLabel ?? code)
+                    Text(kind?.label ?? code)
                         .lineLimit(1)
                         .font(themeStore.uiFont(size: CGFloat(AppConstants.ThemeUI.fontSize - 2), weight: .semibold))
                     Image(systemName: "chevron.up.chevron.down")
@@ -461,8 +351,8 @@ extension ThemeSettingsView {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("⌘\(slot + 1): \(kind?.quickLabel ?? code) (click to change)")
-            tabOrderArrow("chevron.right", disabled: isLast) {
+            .help("⌘\(slot + 1): \(kind?.label ?? code) (click to change)")
+            quickBubbleArrow("chevron.right", disabled: isLast) {
                 settings.quickBubbles = QuickBubbles.moving(slot: slot, by: 1, in: settings.quickBubbles)
             }
         }
@@ -474,7 +364,7 @@ extension ThemeSettingsView {
         )
     }
 
-    private func tabOrderArrow(_ symbol: String, disabled: Bool, action: @escaping () -> Void) -> some View {
+    private func quickBubbleArrow(_ symbol: String, disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 10, weight: .bold))
@@ -485,68 +375,6 @@ extension ThemeSettingsView {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.3 : 1)
-    }
-
-    /// Language chips for tr" / tw": tap to add or remove, 1-5 at a time.
-    var translationLanguagesRow: some View {
-        let chosen = Set(TranslationLanguage.selected(settings.translationLanguages).map(\.code))
-        let atMax = chosen.count >= TranslationLanguage.maxSelected
-        let atMin = chosen.count <= TranslationLanguage.minSelected
-        return SettingsRow(
-            "Languages", icon: "globe",
-            detail: "Pick \(TranslationLanguage.minSelected)-\(TranslationLanguage.maxSelected) languages to translate into (tr\" and tw\")"
-        ) {
-            if Set(TranslationLanguage.defaultCodes) != chosen {
-                Button("Reset to VI · EN · FR") {
-                    settings.translationLanguages = TranslationLanguage.defaultCodes
-                }
-            }
-        } below: {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8, alignment: .leading)], alignment: .leading, spacing: 8) {
-                    ForEach(TranslationLanguage.supported) { language in
-                        let isOn = chosen.contains(language.code)
-                        let locked = isOn ? atMin : atMax
-                        Button {
-                            toggleTranslationLanguage(language.code, chosen: chosen)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text("\(language.name)")
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                Text(language.shortCode)
-                                    .foregroundStyle(themeStore.mutedTextColor())
-                            }
-                            .font(themeStore.uiFont(size: CGFloat(AppConstants.ThemeUI.fontSize - 2), weight: isOn ? .semibold : .regular))
-                            .foregroundStyle(isOn ? themeStore.fontColor() : themeStore.secondaryTextColor())
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                themeStore.liftColor(opacity: isOn ? Self.activeFillOpacity : Self.inactiveFillOpacity),
-                                in: RoundedRectangle(cornerRadius: themeStore.controlRadius, style: .continuous)
-                            )
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(locked)
-                        .opacity(locked && !isOn ? 0.45 : 1)
-                    }
-                }
-        }
-    }
-
-    func toggleTranslationLanguage(_ code: String, chosen: Set<String>) {
-        var next = chosen
-        if next.contains(code) {
-            guard next.count > TranslationLanguage.minSelected else { return }
-            next.remove(code)
-        } else {
-            guard next.count < TranslationLanguage.maxSelected else { return }
-            next.insert(code)
-        }
-        // Keep the catalog's display order.
-        settings.translationLanguages = TranslationLanguage.supported.map(\.code).filter(next.contains)
     }
 
     func selectExcludedFolderPath() {
@@ -580,10 +408,6 @@ extension ThemeSettingsView {
     func syncIndexingInputsFromSettings() {
         fileScanDepthInput = String(settings.fileScanDepth)
         fileScanLimitInput = String(settings.fileScanLimit)
-        clipboardHistoryLimitInput = String(settings.clipboardHistoryLimit)
-        clipboardImageLimitInput = String(settings.clipboardImageLimit)
-        clipboardHistoryLimitError = nil
-        clipboardImageLimitError = nil
     }
 
     func sanitizedNumericInput(_ value: String) -> String {
@@ -608,19 +432,6 @@ extension ThemeSettingsView {
         fileScanLimitInput = String(settings.fileScanLimit)
     }
 
-    /// Save with a typed value still out of range (or empty) puts back the last valid one
-    /// instead of saving it, like the scan inputs above.
-    func applyClipboardLimitInputs() {
-        if let parsed = Int(clipboardHistoryLimitInput), ClipboardLimits.textRange.contains(parsed) {
-            settings.clipboardHistoryLimit = parsed
-        }
-        if let parsed = Int(clipboardImageLimitInput), ClipboardLimits.imageRange.contains(parsed) {
-            settings.clipboardImageLimit = parsed
-        }
-        clipboardHistoryLimitInput = String(settings.clipboardHistoryLimit)
-        clipboardImageLimitInput = String(settings.clipboardImageLimit)
-    }
-
     func runFreshConfigReset() {
         let ok = themeStore.regenerateFreshConfigFile()
         syncIndexingInputsFromSettings()
@@ -636,7 +447,6 @@ extension ThemeSettingsView {
     /// A typed value outside its range: Save stays off until it is fixed.
     var hasInputError: Bool {
         fileScanDepthError != nil || fileScanLimitError != nil
-            || clipboardHistoryLimitError != nil || clipboardImageLimitError != nil
     }
 }
 
@@ -843,9 +653,9 @@ struct AccessibilityStatusRow: View {
     private var line: String {
         switch state {
         case nil: "Checking…"
-        case .working?: "Working. Used for window search and for looking up the selected text"
+        case .working?: "Working. Used for window search"
         case .off(listed: true)?: "Off. Lumio is in the macOS list, but its switch is off"
-        case .off(listed: false)?: "Off. Window search and looking up the selected text need it"
+        case .off(listed: false)?: "Off. Window search requires this permission"
         case .stale(.allowedButRefused)?: "Stale: allowed, but macOS refuses Lumio until it is reopened"
         case .stale(.switchOnButIgnored)?: "Stale: the switch is on in System Settings, but macOS is ignoring it"
         case .stale(.workedBefore)?: "Probably stale: it worked before and has stopped"

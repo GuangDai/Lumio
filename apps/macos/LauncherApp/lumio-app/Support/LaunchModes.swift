@@ -13,7 +13,7 @@ private func lumio_modes_parse_json(_ argvJSON: UnsafePointer<CChar>?) -> Unsafe
 nonisolated
 private func lumio_free_cstring(_ ptr: UnsafeMutablePointer<CChar>?)
 
-/// `lumio clipboard`: open the launcher already in a mode. The table and the
+/// `lumio processes`: open the launcher already in a mode. The table and the
 /// argv grammar live in core (`core/engine/modes.rs`); this carries the answer
 /// across and nothing else.
 enum LaunchModes {
@@ -42,11 +42,6 @@ enum LaunchModes {
                 Data("lumio: unknown mode \"\(name)\"\n\n\(listText())".utf8))
             return 2
 
-        case .unavailableMode(let name):
-            FileHandle.standardError.write(
-                Data("lumio: mode \"\(name)\" is not available on this platform\n".utf8))
-            return 2
-
         case .query(let text):
             guard isSameAppAlreadyRunning() else {
                 pendingQuery = text
@@ -63,7 +58,6 @@ enum LaunchModes {
         case query(String)
         case listModes
         case unknownMode(String)
-        case unavailableMode(String)
     }
 
     private struct Decision: Decodable {
@@ -89,7 +83,6 @@ enum LaunchModes {
         case "query": return decoded.text.map(Launch.query) ?? .normal
         case "list_modes": return .listModes
         case "unknown_mode": return .unknownMode(decoded.name ?? "")
-        case "unavailable_mode": return .unavailableMode(decoded.name ?? "")
         default: return .normal
         }
     }

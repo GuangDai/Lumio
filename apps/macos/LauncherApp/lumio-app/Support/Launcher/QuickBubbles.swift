@@ -1,31 +1,22 @@
 import Foundation
 
 /// The round buttons that split off the idle launcher bar: which feature each of the fixed
-/// slots opens, in order, saved as `quick_bubbles=app,folder,doc,content`.
+/// slots opens, in order, saved as `quick_bubbles=app,folder,doc,process`.
 /// Codes are `SpotlightKind` raw values. Pure logic, so it is unit tested (LauncherLogicTests).
 nonisolated enum QuickBubbles {
     static let configKey = "quick_bubbles"
 
-    /// The window and the idle bar are sized for exactly this many buttons.
-    static let slotCount = 4
+    static let defaultCodes = ["app", "folder", "doc", "process"]
+    static let choices = defaultCodes
+    static let slotCount = defaultCodes.count
 
-    /// Every feature a button can open: the result groups, then the tool tabs.
-    static let choices = ["app", "folder", "doc", "content", "clip", "lookup", "translation", "process"]
-
-    static let defaultCodes = ["app", "folder", "doc", "content"]
-
-    /// Exactly `slotCount` known, distinct codes: junk and repeats are dropped, then empty slots
-    /// are filled from the defaults (then the other choices) that are not used yet.
+    /// Drops unknown and repeated codes, then fills remaining slots from the default order.
     static func normalized(_ codes: [String]) -> [String] {
         var seen = Set<String>()
-        var out = codes
+        let valid = codes
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             .filter { choices.contains($0) && seen.insert($0).inserted }
-        out = Array(out.prefix(slotCount))
-        for code in defaultCodes + choices where out.count < slotCount && !out.contains(code) {
-            out.append(code)
-        }
-        return out
+        return valid + defaultCodes.filter { !seen.contains($0) }
     }
 
     static func parse(_ raw: String) -> [String] {
@@ -36,11 +27,11 @@ nonisolated enum QuickBubbles {
         normalized(codes).joined(separator: ",")
     }
 
-    /// Slot `slot` set to `code`. If another slot already has it, the two swap.
+    /// Swaps the feature at `slot` with the slot currently assigned to `code`.
     static func setting(slot: Int, to code: String, in codes: [String]) -> [String] {
         var out = normalized(codes)
-        guard out.indices.contains(slot), choices.contains(code) else { return out }
-        if let other = out.firstIndex(of: code) { out.swapAt(slot, other) } else { out[slot] = code }
+        guard out.indices.contains(slot), let other = out.firstIndex(of: code) else { return out }
+        out.swapAt(slot, other)
         return out
     }
 

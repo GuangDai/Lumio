@@ -7,18 +7,17 @@
 //  Flow of a single search:
 //  1. `engineQuery(for:)` builds the query string for the core. The round buttons use the core's
 //     own filter prefixes: a" (app), d" (folder), f" (file). System settings are apps with a
-//     `setting:` id; they show under the Applications pill. The OCR tab skips the core and
-//     searches ContentIndex (text inside images / PDFs) instead, see `contentRows`.
+//     `setting:` id; they show under the Applications pill.
 //  2. The view calls `EngineBridge.search` on a background thread (the core holds the engine read lock).
 //  3. `rows(from:for:)` turns the core's results into display rows, then adds the
-//     synthesized rows: calculation, open URL (classified by the core), search the web.
+//     synthesized rows for URLs, system commands and web searches.
 //
 
 import AppKit
 
 struct SpotlightRequest: Equatable {
     var text: String
-    /// Browsing a single group (round button / ⌘1–4).
+    /// Browsing a single group (round button or ⌘ plus a number).
     var browse: SpotlightKind?
 
     var term: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -102,12 +101,6 @@ enum SpotlightBackend {
         guard request.browse == nil, !term.isEmpty, !hasEnginePrefix(term) else { return rows }
 
         var leading: [SpotlightItem] = []
-        if let value = SpotlightCalc.evaluate(term) {
-            leading.append(SpotlightItem(
-                id: "calc|\(term)", name: term, kind: .calc,
-                colors: "#9aa2ad,#4d545d", calcResult: value, symbol: "equal"
-            ))
-        }
         // Bookmarks are already in memory, so they appear with the first results: after the
         // top local results, or right above code / config files when those are all there is.
         if term.count >= 3 {
@@ -124,14 +117,6 @@ enum SpotlightBackend {
                 colors: "#9aa2ad,#5c636e", meta: "Open Lumio's settings  ·  ⌘⇧Space",
                 iconPath: Bundle.main.bundlePath, symbol: "gearshape.fill"
             ), at: min(1, rows.count))
-        }
-        // "5 km to miles", "100 usd to gbp": units and currency (see Conversions).
-        if let conversion = Conversions.evaluate(term) {
-            leading.append(SpotlightItem(
-                id: "convert|\(term)", name: term, kind: .calc,
-                colors: "#7fe0c3,#1f9d8d", meta: conversion.detail,
-                symbol: "arrow.left.arrow.right", payload: conversion.output
-            ))
         }
         if let match = EngineBridge.shared.classifyURL(query: term) {
             let row = SpotlightItem(
@@ -277,17 +262,9 @@ enum SpotlightBackend {
                 meta: PathDisplay.directory(of: path), target: path,
                 iconPath: path, candidateID: result.id
             )
-        case .action, .clipboard, .process:
+        case .action, .process:
             return nil
         }
-    }
-
-    /// A file matched by its content: the snippet around the match replaces the folder line.
-    static func item(from hit: ContentHit) -> SpotlightItem {
-        SpotlightItem(
-            id: "content|" + hit.path, name: (hit.path as NSString).lastPathComponent, kind: .content,
-            meta: hit.snippet ?? PathDisplay.directory(of: hit.path), target: hit.path, iconPath: hit.path
-        )
     }
 
     static let lumioSettingsID = "lumio|settings"
@@ -568,36 +545,6 @@ enum SpotlightBackend {
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 
-    // MARK: - OCR tab
-
-    /// OCR tab: files whose text matches, or one status row (type more / no match / still
-    /// indexing / turned off) when there is nothing to list.
-    static func contentRows(hits: [ContentHit], term: String, status: ContentIndexStatus) -> [SpotlightItem] {
-        let rows = hits.map(item(from:))
-        if !rows.isEmpty { return rows }
-
-        let title: String
-        if !status.enabled {
-            title = "OCR search is turned off"
-        } else if term.count < ContentSearchText.minQueryLength {
-            title = "Type 3+ characters to search text in images & PDFs"
-        } else {
-            title = "No text matches “\(term)”"
-        }
-        return [SpotlightItem(
-            id: "content|status", name: title, kind: .content,
-            colors: "#a7aeb8,#5e6670", meta: statusLine(status), symbol: "text.viewfinder"
-        )]
-    }
-
-    private static func statusLine(_ status: ContentIndexStatus) -> String {
-        guard status.enabled else { return "Set content_index_enabled=true in ~/.lumio/config" }
-        let indexed = "\(status.filesWithText.formatted()) files with text"
-        guard status.indexing else { return indexed }
-        let remaining = status.pending > 0 ? " — \(status.pending.formatted()) left" : ""
-        return indexed + " · reading files\(remaining)…"
-    }
-
     // MARK: - Pinned rows (quick folders, Finder)
 
     /// Desktop, Documents, …, Applications, Trash and Finder: shown on top when the text
@@ -650,8 +597,7 @@ enum SpotlightBackend {
     private static func dedupeKey(_ item: SpotlightItem) -> String {
         switch item.kind {
         case .app: "app:" + item.name.lowercased()
-        // Name and content matches of one file collapse into a single row.
-        case .doc, .content: "doc:" + (item.target ?? item.id).lowercased()
+        case .doc: "doc:" + (item.target ?? item.id).lowercased()
         case .folder: "folder:" + (item.target ?? item.id).lowercased()
         default: item.id
         }
@@ -666,8 +612,8 @@ enum SpotlightBackend {
 
     static func actionRows(for item: SpotlightItem, filter: String) -> [SpotlightItem] {
         var actions: [SpotlightAction] = item.kind == .process
-            ? [.measureCPU, .killProcess, .copyPID]
-            : [.open, .reveal, .copyPath]
+            ? [.measureCPU, .killProcess]
+            : [.open, .reveal]
         if item.isFileTarget {
             actions += [.openInEditor, .openInTerminal]
             if let trash = trashAction(for: item) { actions.append(trash) }

@@ -2,17 +2,12 @@ import AppKit
 import Combine
 import Sparkle
 
-/// Self-updates through Sparkle, set up like Ice. Sparkle reads the feed named
-/// by SUFeedURL in Info.plist (published by scripts/notify-update.sh after each
-/// release), verifies the download against SUPublicEDKey, then installs it and
-/// relaunches Lumio.
-///
-/// Off in Debug builds and in the side-by-side "Lumio Dev" app: an update would
-/// replace them with the release build.
+/// Sparkle installs updates only for release builds configured with their own
+/// feed URL and public signing key.
 final class UpdateChecker: NSObject, ObservableObject {
     static let shared = UpdateChecker()
 
-    /// False for Debug builds and Lumio Dev.
+    /// Requires both update settings in the release bundle.
     let isEnabled: Bool
 
     /// False while a check or an update is already in progress.
@@ -24,7 +19,9 @@ final class UpdateChecker: NSObject, ObservableObject {
         #if DEBUG
         isEnabled = false
         #else
-        isEnabled = !AppVersion.isDevBuild
+        let feed = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
+        let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
+        isEnabled = !AppVersion.isDevBuild && feed?.isEmpty == false && key?.isEmpty == false
         #endif
         super.init()
     }

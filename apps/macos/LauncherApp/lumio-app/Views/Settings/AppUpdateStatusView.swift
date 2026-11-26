@@ -36,7 +36,7 @@ struct AppUpdateStatusView: View {
                         .font(themeStore.uiFont(size: fontSize - 1, weight: .regular))
                 }
             } else {
-                Text("Updates are off in dev builds")
+                Text("Download updates from GitHub")
                     .font(themeStore.uiFont(size: fontSize - 2, weight: .regular))
                     .foregroundStyle(themeStore.mutedTextColor())
             }

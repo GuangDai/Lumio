@@ -21,17 +21,8 @@ struct ThemeSettings: Codable, Equatable {
     var fileScanDepth: Int = 4
     var fileScanLimit: Int = 4000
     var lazyIndexingEnabled: Bool = true
-    /// Text clips the clipboard history keeps (`clipboard_history_limit`). Older ones are
-    /// deleted from the database, not just hidden; pinned clips never count.
-    var clipboardHistoryLimit: Int = ClipboardLimits.Text.maxEntries
-    /// Image clips kept (`clipboard_image_limit`); each is a file on disk.
-    var clipboardImageLimit: Int = ClipboardLimits.Image.maxEntries
     var backendLogLevel: BackendLogLevel = .error
     var launchAtLogin: Bool = true
-    /// Language codes the translator offers (tr" rows, tw" bar).
-    var translationLanguages: [String] = TranslationLanguage.defaultCodes
-    /// Order of the tool tabs in the launcher (`tab_order`), SpotlightKind raw values.
-    var tabOrder: [String] = TabOrder.defaultCodes
     /// Tool tabs left out of the pill row and the Tab cycle (`tab_hidden`).
     var hiddenTabs: [String] = []
     /// What each round button of the idle bar opens, in order (`quick_bubbles`).
@@ -60,18 +51,14 @@ struct ThemeSettings: Codable, Equatable {
         fileScanDepth = try c.decodeIfPresent(Int.self, forKey: .fileScanDepth) ?? d.fileScanDepth
         fileScanLimit = try c.decodeIfPresent(Int.self, forKey: .fileScanLimit) ?? d.fileScanLimit
         lazyIndexingEnabled = try c.decodeIfPresent(Bool.self, forKey: .lazyIndexingEnabled) ?? d.lazyIndexingEnabled
-        clipboardHistoryLimit = try c.decodeIfPresent(Int.self, forKey: .clipboardHistoryLimit) ?? d.clipboardHistoryLimit
-        clipboardImageLimit = try c.decodeIfPresent(Int.self, forKey: .clipboardImageLimit) ?? d.clipboardImageLimit
         backendLogLevel = try c.decodeIfPresent(BackendLogLevel.self, forKey: .backendLogLevel) ?? d.backendLogLevel
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
-        translationLanguages = try c.decodeIfPresent([String].self, forKey: .translationLanguages) ?? d.translationLanguages
-        tabOrder = TabOrder.normalized(try c.decodeIfPresent([String].self, forKey: .tabOrder) ?? d.tabOrder)
-        hiddenTabs = TabOrder.normalizedHidden(try c.decodeIfPresent([String].self, forKey: .hiddenTabs) ?? d.hiddenTabs)
+        hiddenTabs = HiddenTabs.normalized(try c.decodeIfPresent([String].self, forKey: .hiddenTabs) ?? d.hiddenTabs)
         quickBubbles = QuickBubbles.normalized(try c.decodeIfPresent([String].self, forKey: .quickBubbles) ?? d.quickBubbles)
         launcherCornerRadius = min(max(try c.decodeIfPresent(Double.self, forKey: .launcherCornerRadius) ?? d.launcherCornerRadius, Self.cornerRadiusRange.lowerBound), Self.cornerRadiusRange.upperBound)
         liquidGlassEnabled = try c.decodeIfPresent(Bool.self, forKey: .liquidGlassEnabled) ?? d.liquidGlassEnabled
         let savedHotkeys = try c.decodeIfPresent([String: String].self, forKey: .hotkeys) ?? [:]
-        hotkeys = d.hotkeys.merging(savedHotkeys) { _, saved in saved }
+        hotkeys = d.hotkeys.merging(savedHotkeys.filter { d.hotkeys[$0.key] != nil }) { _, saved in saved }
     }
 
     /// The shortcut set for `action`; nil when it is off or unreadable.

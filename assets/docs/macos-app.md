@@ -7,14 +7,13 @@ lumio-app/
 ├── lumio_appApp.swift, ContentView.swift   entry point
 ├── Window/                                 floating panel, settings window, window setup
 ├── Views/
-│   ├── Spotlight/                          launcher UI: search field, results, preview, dictionary, translation
+│   ├── Spotlight/                          launcher UI: search field, results, previews
 │   ├── Settings/                           settings and update status
 │   └── Commands/                           `:kill` and other commands
-├── Models/                                 LauncherResult, theme and dictionary models
+├── Models/                                 LauncherResult and theme models
 ├── Components/                             shared view pieces (blur)
 └── Support/
-    ├── Launcher/                           engine bridge, hotkey, clipboard, processes, trash, tools, selected text
-    ├── ContentIndex/                       OCR search (see ocr-search.md)
+    ├── Launcher/                           engine bridge, hotkey, processes, trash, tools
     ├── UI/                                 motion
     └── …                                   config path, theme store, update checker, single-instance lock
 ```
@@ -24,11 +23,8 @@ lumio-app/
 - **Panel and hotkey.** `LauncherPanelWindow` is a non-activating floating panel; `GlobalHotKeyManager` registers `Option+Space`. `SingleInstanceLock` keeps one copy running.
 - **Search.** `EngineBridge` talks to the Rust core. `LauncherSearchLogic` and `SpotlightBackend` turn results into rows and handle filters.
 - **Actions.** `SpotlightOpener`, `ToolLauncher` and `TrashService` open, reveal, run or delete the selected item.
-- **Clipboard.** `ClipboardHistoryStore` captures text and images and stores them through the bridge. A copied image is read, converted to PNG and thumbnailed by `ClipboardImageWorker` (the app binary started with `--clipboard-image-worker`), so a screenshot's tens of MB never enter the launcher process. Text clips work like Maccy's: the in-memory list holds only metadata and a 300-character preview per clip, search runs in SQLite, and a clip's full text is loaded from the database when it is pasted or previewed. The history keeps the newest 300 text clips and 20 images by default (`clipboard_history_limit`, `clipboard_image_limit`, both in Settings > Clipboard); lowering a limit also deletes the older rows.
-- **Lookups.** `DictionaryLookupService` and `TextTranslator` back the dictionary and translation views; `SelectedTextReader` reads the selected word through Accessibility.
 - **Processes.** `ProcessFinderModel`, `ProcessScoring` and `ProcessService` list, rank and force quit running processes.
-- **OCR.** `ContentIndex` searches text read out of images and PDFs. The reading (Apple's Vision framework, PDFKit) happens in `ContentIndexWorker`, the app binary started with `--content-index-worker` when the OCR tab is opened; it exits when its pass is done.
-- **Updates.** Sparkle checks `appcast.xml` once a day; `UpdateChecker` and `AppUpdateStatusView` drive the UI. Sparkle is off in Debug and Lumio Dev builds.
+- **Updates.** Release builds can use Sparkle if a feed URL and signing key are configured. The fork ships without a feed.
 
 ## Rust build phase
 

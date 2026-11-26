@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// The pages of the Settings window, listed in its sidebar (like Fluent Search's settings).
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, search, appearance, indexing, shortcuts, tabs, clipboard, translation
+    case general, search, appearance, indexing, shortcuts, tabs
 
     var id: String { rawValue }
 
@@ -16,8 +16,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .indexing: "Indexing"
         case .shortcuts: "Shortcuts"
         case .tabs: "Tabs"
-        case .clipboard: "Clipboard"
-        case .translation: "Translation"
         }
     }
 
@@ -29,8 +27,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .indexing: "square.stack.3d.up.fill"
         case .shortcuts: "keyboard.fill"
         case .tabs: "rectangle.3.group.fill"
-        case .clipboard: "doc.on.clipboard.fill"
-        case .translation: "globe"
         }
     }
 
@@ -43,8 +39,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .indexing: Color(nsColor: .systemTeal)
         case .shortcuts: Color(nsColor: .systemIndigo)
         case .tabs: Color(nsColor: .systemPurple)
-        case .clipboard: Color(nsColor: .systemYellow)
-        case .translation: Color(nsColor: .systemGreen)
         }
     }
 
@@ -55,10 +49,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .search: "file manager finder explorer open folders external drives ssd usb suggestions empty recent web google"
         case .appearance: "corner radius liquid glass blur theme look"
         case .indexing: "scan scope depth limit lazy folders skipped extra index files everything"
-        case .shortcuts: "hotkey keyboard key combination launcher clipboard quick look"
-        case .tabs: "tab order hide show hidden round buttons bubbles idle clipboard dictionary translate processes ocr"
-        case .clipboard: "clipboard history clips images keep limit"
-        case .translation: "languages translate dictionary"
+        case .shortcuts: "hotkey keyboard key combination launcher quick look"
+        case .tabs: "tab hide show hidden round buttons bubbles idle processes"
         }
     }
 }
@@ -83,10 +75,6 @@ struct ThemeSettingsView: View {
     @State var fileScanLimitInput = ""
     @State var fileScanDepthError: String?
     @State var fileScanLimitError: String?
-    @State var clipboardHistoryLimitInput = ""
-    @State var clipboardImageLimitInput = ""
-    @State var clipboardHistoryLimitError: String?
-    @State var clipboardImageLimitError: String?
     @State var extraScanDirectoryMessage: String?
     @State var showFreshConfigConfirm = false
     @State var freshConfigMessage: String?
@@ -196,7 +184,6 @@ struct ThemeSettingsView: View {
                 Button("Save Config") {
                     applyFileScanDepthInput()
                     applyFileScanLimitInput()
-                    applyClipboardLimitInputs()
                     let ok = themeStore.saveCurrentConfigToFile()
                     saveMessage = SaveMessage(text: ok ? "Saved" : "Save failed", succeeded: ok)
                     if ok {

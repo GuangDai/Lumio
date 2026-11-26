@@ -29,7 +29,7 @@ struct SpotlightLauncherView: View {
     static var quickItems: [SpotlightQuickItem] {
         QuickBubbles.normalized(ThemeStore.shared.settings.quickBubbles)
             .compactMap(SpotlightKind.init(rawValue:))
-            .map { SpotlightQuickItem(kind: $0, icon: $0.quickIcon, label: $0.quickLabel) }
+            .map { SpotlightQuickItem(kind: $0, icon: $0.quickIcon, label: $0.label) }
     }
 
     @Environment(\.colorScheme) private var colorScheme
@@ -55,7 +55,7 @@ struct SpotlightLauncherView: View {
     /// The sorted list for the sort menu, kept until the rows or the mode change.
     @State private var sortMemo = SortedResultsMemo()
     @State private var sel = 0
-    /// Set by ⌘D on a clip: the next publish keeps this row index (the rows below slide up) instead of jumping to the top.
+    /// Keeps the selection when publishing additional results for the same search.
     @State private var keepSelOnPublish: Int?
     private var filter: SpotlightKind? {
         get { list.filter }
@@ -67,7 +67,7 @@ struct SpotlightLauncherView: View {
     @State private var scopeReturnQuery = ""
     /// Text left in the field when the launcher was dismissed; restored on the next open.
     @State private var keptQuery = ""
-    /// Tab (Dictionary, Translate, …) open when the launcher was dismissed; reopened with `keptQuery`.
+    /// Tab open when the launcher was dismissed; reopened with `keptQuery`.
     @State private var keptBrowse: SpotlightKind?
     /// Tag chips on the field when the launcher was dismissed; restored with `keptQuery`.
     @State private var keptTags: [SearchTag] = []
@@ -105,9 +105,6 @@ struct SpotlightLauncherView: View {
     @State private var searchTask: Task<Void, Never>?
     /// Whole-Mac file matches (Spotlight), added after the first results are on screen.
     @State private var fileTask: Task<Void, Never>?
-    /// OCR tab while the index is still being built: searches again shortly, so new matches
-    /// and the progress line show up without typing.
-    @State private var ocrPollTask: Task<Void, Never>?
     /// Enter pressed before results for the latest text arrived: open as soon as they do.
     @State private var activateWhenReady = false
 
@@ -130,19 +127,9 @@ struct SpotlightLauncherView: View {
     @State private var introUntil = Date.distantPast
     @State private var toastMsg: String?
     @State private var mouseGate = MouseGate()
-    /// Clipboard: the side preview (full text + details) is open. It opens after resting on a row
-    /// for `clipPreviewDelay`, then follows the selection until the tab is left.
-    @State private var clipPreviewShown = false
-    @State private var clipPreviewTask: Task<Void, Never>?
-    /// Row under the mouse pointer, so leaving it cancels the pending clipboard preview.
-    @State private var hoveredRow: Int?
     /// Bumped when a PreviewFacts lookup lands, so the chips are built again with it.
     @State private var previewFactsTick = 0
 
-    // Legacy launcher modes (prefix / command) — reusing the legacy modules as-is.
-    /// Clipboard watcher (c" / ci"). Must live with the launcher: the legacy launcher isn't
-    /// built in Spotlight mode, so nobody else records history.
-    @StateObject private var clipboardStore = ClipboardHistoryStore()
     @StateObject private var processModel = ProcessFinderModel()
     /// Command currently open (`:kill`, `:emptytrash`, `:help`). nil = normal search.
     @State private var activeCommand: String?
@@ -158,15 +145,11 @@ struct SpotlightLauncherView: View {
     /// Clear the kept search when hidden longer than `query_retention_seconds`.
     @State private var hiddenAt: Date?
     @State private var retentionSeconds = AppConstants.Launcher.QueryRetention.defaultSeconds
-    /// tr" — translations of the typed text (the rows only name the target languages).
-    @State private var translation = SpotlightTranslationBatch()
     @State private var keyMonitor = SpotlightKeyMonitor()
 
     @State private var idleTask: Task<Void, Never>?
     @State private var dismissTask: Task<Void, Never>?
     @State private var hiddenTrim = DelayedAction()
-    /// The pending selected-text read of the last open (Accessibility IPC runs off-main).
-    @State private var selectionTask: Task<Void, Never>?
     @State private var toastTask: Task<Void, Never>?
     @State private var pidToRestore: pid_t?
     @FocusState private var isFocused: Bool
@@ -174,40 +157,23 @@ struct SpotlightLauncherView: View {
     // MARK: - Derived
 
     private var results: [SpotlightItem] {
-        guard sortMode != .relevance, scope == nil, activeCommand == nil, !inModeTab else { return list.results }
+        guard sortMode != .relevance, scope == nil, activeCommand == nil, !inProcessTab else { return list.results }
         return sortMemo.sorted(list, by: sortMode)
     }
 
     /// Pills for the groups present in the results (see `SpotlightResultList.kinds`).
     private var kinds: [SpotlightKind] { list.kinds }
 
-    private var inOCR: Bool { browse == .content }
-
-    /// On OCR or a tool tab: a different search, not a filter of the name results.
-    private var inModeTab: Bool { browse.map(SpotlightKind.modeTabs.contains) ?? false }
+    private var inProcessTab: Bool { browse == .process }
 
     private var panelWidth: CGFloat { idle ? Metric.idleWidth : Metric.panelWidth }
 
     /// The panel always leaves room for at least `minRowsWithPreview` rows when open: the right half is the
     /// preview, which needs room for code / images even with just one or two results.
-    /// tw" shows dictionary entries, which need the full height whatever the number of words.
-    private var rowSlots: Int {
-        isLookup || isClipboard ? Metric.maxVisibleRows : max(results.count, Metric.minRowsWithPreview)
-    }
-
-    /// Clipboard tab: one full-width list of one-line clips, no preview, like Maccy.
-    private var isClipboard: Bool { browse == .clip && scope == nil && activeCommand == nil }
-
-    /// Clipboard: the list fills the panel until the side preview opens.
-    private var showsPreview: Bool { !isClipboard || clipPreviewShown }
-
-    private static let clipPreviewDelay: Duration = .seconds(1)
-
-    /// tw": the list is a narrow column of words, like the Dictionary.app sidebar.
-    private var isLookup: Bool { all.first?.kind == .lookup }
+    private var rowSlots: Int { max(results.count, Metric.minRowsWithPreview) }
 
     /// Width of the list column; the rest of the panel is the preview.
-    private var listPaneWidth: CGFloat { isLookup ? 180 : 300 }
+    private let listPaneWidth: CGFloat = 300
 
     /// Item shown in the preview pane: the item whose actions are being viewed, otherwise the selected row.
     private var previewItem: SpotlightItem? {
@@ -249,7 +215,6 @@ struct SpotlightLauncherView: View {
             }
             return "search \(tag.name)"
         }
-        if inOCR { return "Search text in images & PDFs" }
         if let browse { return "Search in \(browse.label)" }
         return "Lumio Search"
     }
@@ -324,13 +289,9 @@ struct SpotlightLauncherView: View {
             sel = 0
             refresh()
         }
-        .onChange(of: browse) { _, tab in
+        .onChange(of: browse) {
             sel = 0
             filter = nil
-            closeClipPreview()
-            // The OCR worker only ever starts here: opening the OCR tab brings the index up to
-            // date (new / changed files, at most every 15 min). Nothing else runs OCR.
-            if tab == .content { ContentIndex.shared.refreshIfStale() }
             refresh()
         }
         .onChange(of: filter) { sel = 0 }
@@ -375,9 +336,6 @@ struct SpotlightLauncherView: View {
         .onAppear {
             keyMonitor.start { handleKey($0) }
             loadRetention()
-            // Quick Look is a global panel with no handle on the store, and clip rows carry
-            // titles only: it asks the launcher for the text.
-            SpotlightQuickLook.clipText = { [clipboardStore] id in await clipboardStore.content(of: id) }
             // A cold `lumio <mode>`: this process launched to serve it.
             if let pending = LaunchModes.pendingQuery {
                 LaunchModes.pendingQuery = nil
@@ -393,7 +351,6 @@ struct SpotlightLauncherView: View {
             activeCommand: activeCommand,
             previewID: previewItem?.id,
             processModel: processModel,
-            clipboardStore: clipboardStore,
             onCommandChange: { refresh() },
             onPreviewChange: {
                 armedKillPID = nil
@@ -403,12 +360,12 @@ struct SpotlightLauncherView: View {
                     processModel.loadDetail(pid: pid)
                 }
             },
-            // Mode data arriving later (process snapshot, new clip): rebuild the rows.
+            // Rebuild the rows when the process snapshot arrives.
             onProcesses: {
-                if activeCommand == SpotlightCommands.kill || isMode(.process) { refresh() }
-            },
-            onClips: { if isMode(.clip) { refresh() } },
-            onImages: { if isMode(.clip) { refresh() } }
+                if activeCommand == SpotlightCommands.kill || (scope == nil && activeCommand == nil && inProcessTab) {
+                    refresh()
+                }
+            }
         )
     }
 
@@ -579,21 +536,15 @@ struct SpotlightLauncherView: View {
             .frame(height: Metric.pillsHeight)
             .padding(.top, Metric.lowerTopInset)
         // Split INSIDE the panel: list on the left, preview on the right.
-        // Clipboard: just the list, full width.
         HStack(spacing: 0) {
             listView
-                .frame(width: showsPreview ? listPaneWidth : Metric.panelWidth)
-            if showsPreview {
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(palette.divider)
-                        .frame(width: 1)
-                        .padding(.vertical, 8)
-                    previewPane
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .transition(.opacity)
-            }
+                .frame(width: listPaneWidth)
+            Rectangle()
+                .fill(palette.divider)
+                .frame(width: 1)
+                .padding(.vertical, 8)
+            previewPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(height: SpotlightSpec.listHeight(rows: rowSlots))
     }
@@ -601,11 +552,7 @@ struct SpotlightLauncherView: View {
     /// Right half of the panel: preview of the selected row (or the item whose actions are open).
     private var previewPane: some View {
         ZStack(alignment: .topLeading) {
-            if let item = previewItem, item.kind == .clip || item.kind == .clipImage {
-                SpotlightClipPreview(
-                    item: item, details: clipDetails(for: item), store: clipboardStore)
-                    .id(item.id)
-            } else if let item = previewItem {
+            if let item = previewItem {
                 SpotlightPreviewView(
                     item: item,
                     chips: previewChips(for: item),
@@ -615,12 +562,7 @@ struct SpotlightLauncherView: View {
                     processDetail: item.pid.flatMap { processModel.details[$0] },
                     processCPU: item.pid.flatMap { processModel.cpu[$0] },
                     measuringCPU: item.pid.map { processModel.measuringCPU.contains($0) } ?? false,
-                    onOpenPath: { path, isFolder in openFromPreview(path, isFolder: isFolder) },
-                    onLookup: { word in
-                        openTab(.lookup, text: word)
-                        focusField()
-                    },
-                    translation: translation
+                    onOpenPath: { path, isFolder in openFromPreview(path, isFolder: isFolder) }
                 )
                 .id(item.id)
             }
@@ -635,8 +577,8 @@ struct SpotlightLauncherView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Metric.pillGap) {
-                    pillButton(label: "All", active: filter == nil && !inModeTab) {
-                        if inModeTab { leaveModeTab() } else { filter = nil }
+                    pillButton(label: "All", active: filter == nil && !inProcessTab) {
+                        if inProcessTab { leaveProcessTab() } else { filter = nil }
                     }
                         .id(Self.allPillID)
                     ForEach(kinds) { kind in
@@ -645,11 +587,11 @@ struct SpotlightLauncherView: View {
                         }
                         .id(kind.rawValue)
                     }
-                    ForEach(shownModeTabs) { tab in
-                        pillButton(label: tab.tabLabel, active: browse == tab) {
-                            toggleBrowse(tab)
+                    if processTabVisible || inProcessTab {
+                        pillButton(label: SpotlightKind.process.label, active: inProcessTab) {
+                            toggleBrowse(.process)
                         }
-                        .id(tab.rawValue)
+                        .id(SpotlightKind.process.rawValue)
                     }
                 }
                 .padding(.horizontal, 14)
@@ -661,9 +603,9 @@ struct SpotlightLauncherView: View {
                 }
             }
             .onChange(of: browse) { _, tab in
-                let id = tab.flatMap { SpotlightKind.modeTabs.contains($0) ? $0.rawValue : nil }
+                let id = tab == .process ? SpotlightKind.process.rawValue : Self.allPillID
                 withAnimation(motion(SpotlightMotion.chip)) {
-                    proxy.scrollTo(id ?? Self.allPillID)
+                    proxy.scrollTo(id)
                 }
             }
         }
@@ -671,28 +613,26 @@ struct SpotlightLauncherView: View {
 
     private static let allPillID = "pill-all"
 
-    /// Tool tab pills: the visible ones, plus a hidden tab while it is open (from a round
-    /// button or a command) so the row still shows where you are.
-    private var shownModeTabs: [SpotlightKind] {
-        SpotlightKind.modeTabs.filter { SpotlightKind.visibleModeTabs.contains($0) || $0 == browse }
+    private var processTabVisible: Bool {
+        !themeStore.settings.hiddenTabs.contains(SpotlightKind.process.rawValue)
     }
 
-    /// Tab / Shift+Tab: move to the next / previous pill (All → Applications → … → tools → OCR → All).
-    /// Landing on OCR or a tool switches to its search; leaving goes back to the name search.
+    /// Tab / Shift+Tab cycles through the result filters and the Processes tab.
     private func cycleFilter(_ step: Int) {
         // Only the group pills the user can actually see. With the field emptied the panel is
         // collapsed but `all` still holds the old results (kept so they fade out), and their
         // groups would otherwise be invisible stops: Tab seemed to do nothing for a few presses.
-        let groups = expanded && !inModeTab ? kinds : []
-        let options: [SpotlightKind?] = [nil] + groups + SpotlightKind.visibleModeTabs.map(Optional.some)
-        let current = inModeTab ? (options.firstIndex(of: browse) ?? 0) : (options.firstIndex(of: filter) ?? 0)
+        let groups = expanded && !inProcessTab ? kinds : []
+        var options: [SpotlightKind?] = [nil] + groups
+        if processTabVisible { options.append(.process) }
+        let current = inProcessTab ? (options.firstIndex(of: browse) ?? 0) : (options.firstIndex(of: filter) ?? 0)
         let next = options[(current + step + options.count) % options.count]
-        if let next, SpotlightKind.modeTabs.contains(next) {
+        if next == .process {
             filter = nil
             // A Lumio tab replaces a search tag chip (GitHub, YouTube…): never both at once.
-            withAnimation(motion(SpotlightMotion.chip)) { scope = nil; tagStack = []; browse = next }
+            withAnimation(motion(SpotlightMotion.chip)) { scope = nil; tagStack = []; browse = .process }
         } else {
-            if inModeTab { leaveModeTab() }
+            if inProcessTab { leaveProcessTab() }
             filter = next
         }
     }
@@ -709,7 +649,7 @@ struct SpotlightLauncherView: View {
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
-    /// Opens a tool tab with some text in the field (Dictionary from a linked word, `lumio <mode>`).
+    /// Opens a tab with text in the field (for example, from `lumio <mode>`).
     private func openTab(_ tab: SpotlightKind?, text: String) {
         withAnimation(motion(SpotlightMotion.chip)) {
             scope = nil
@@ -722,7 +662,7 @@ struct SpotlightLauncherView: View {
         focusField()
     }
 
-    private func leaveModeTab() {
+    private func leaveProcessTab() {
         withAnimation(motion(SpotlightMotion.chip)) { browse = nil }
     }
 
@@ -771,15 +711,8 @@ struct SpotlightLauncherView: View {
                                     .onHover { hovering in
                                         // Ignore hovers caused by the list changing under a stationary
                                         // pointer — only accept them when the mouse actually moves.
-                                        if hovering, mouseGate.moved() {
-                                            if sel != index {
-                                                withAnimation(motion(SpotlightMotion.selectionGlide)) { sel = index }
-                                            }
-                                            hoveredRow = index
-                                            scheduleClipPreview()
-                                        } else if !hovering, hoveredRow == index {
-                                            hoveredRow = nil
-                                            clipPreviewTask?.cancel()
+                                        if hovering, mouseGate.moved(), sel != index {
+                                            withAnimation(motion(SpotlightMotion.selectionGlide)) { sel = index }
                                         }
                                     }
                             }
@@ -805,138 +738,30 @@ struct SpotlightLauncherView: View {
         }
     }
 
-    private func togglePin(_ item: SpotlightItem) {
-        if item.kind == .clip, let id = item.clipID {
-            clipboardStore.togglePin(id: id)
-        } else if item.kind == .clipImage, let id = item.payload {
-            clipboardStore.toggleImagePin(id: id)
-        } else {
-            return
-        }
-        toast(item.isPinned ? "Unpinned" : "Pinned")
-    }
-
-    /// Removes the clip from history. Returns false when `item` isn't a clip.
-    @discardableResult
-    private func deleteClip(_ item: SpotlightItem) -> Bool {
-        guard item.kind == .clip || item.kind == .clipImage else { return false }
-        // Keep the cursor on the same row: the next row slides up into it. Set BEFORE deleting,
-        // since the store's change re-publishes the list right away (publish would reset to 0).
-        let keep = sel
-        keepSelOnPublish = keep
-        if item.kind == .clip, let id = item.clipID {
-            clipboardStore.deleteEntry(id: id)
-            toast("Clipboard item deleted")
-        } else if item.kind == .clipImage, let id = item.payload {
-            clipboardStore.deleteImageEntry(id: id)
-            toast("Image deleted")
-        }
-        all.removeAll { $0.id == item.id }
-        sel = min(keep, max(results.count - 1, 0))
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(300))
-            if keepSelOnPublish == keep { keepSelOnPublish = nil }
-        }
-        return true
-    }
-
-    /// One list row. Everything the row draws is passed by value (the row skips its body when
-    /// none of it changed); the two clip actions are closures over this launcher's state.
+    /// The row skips drawing its body when its inputs stay the same.
     private func resultRow(_ item: SpotlightItem, selected: Bool) -> some View {
         SpotlightRow(
-            item: item.kind == .translation ? translationRow(item) : item,
+            item: item,
             selected: selected,
             armed: armedKillPID != nil && item.pid == armedKillPID,
-            thumbnail: item.kind == .clipImage
-                ? item.iconPath.flatMap { RowIconCache.thumbnail(forFile: $0) }
-                : nil,
             running: item.kind == .app && (item.iconPath ?? item.target).map(runningApps.contains) == true,
             highlight: highlightWords(for: item),
             palette: palette,
             reduceMotion: reduceMotion,
-            namespace: selectionSpace,
-            onTogglePin: { togglePin(item) },
-            onDelete: { deleteClip(item) }
+            namespace: selectionSpace
         )
         .equatable()
-    }
-
-    /// tr": the translation on top, the target language below.
-    private func translationRow(_ item: SpotlightItem) -> SpotlightItem {
-        let name = translation.result(for: item.payload)?.text
-            ?? (translation.failed(item.payload) ? "Couldn't translate" : "Translating…")
-        return SpotlightItem(
-            id: item.id, name: name, kind: item.kind, colors: item.colors,
-            meta: item.meta, symbol: item.symbol, payload: item.payload
-        )
     }
 
     /// Typed words to show in bold in `item`'s title (Fluent Search-style).
     private func highlightWords(for item: SpotlightItem) -> [String] {
         guard scope == nil, activeCommand == nil,
-              [.app, .doc, .content, .folder, .url, .tab, .setting].contains(item.kind)
+              [.app, .doc, .folder, .url, .tab, .setting].contains(item.kind)
         else { return [] }
         // The text these rows were found for, not the live field: a keystroke then leaves the
         // rows alone (they skip their body) until its own results land, and stale rows never
         // bold letters they don't match.
         return shownQuery.lowercased().split(separator: " ").map(String.init).filter { $0.count >= 2 }
-    }
-
-    /// Clipboard: what the side preview lists under the clip (app, copy times, count).
-    private func clipDetails(for item: SpotlightItem) -> ClipboardClipDetails? {
-        if item.kind == .clip, let id = item.clipID,
-           let entry = clipboardStore.entries.first(where: { $0.id == id })
-        {
-            return ClipboardClipDetails(
-                appBundleID: entry.appBundleID, firstCopiedAt: entry.firstCapturedAt,
-                lastCopiedAt: entry.capturedAt, copyCount: entry.copyCount
-            )
-        }
-        if item.kind == .clipImage, let hash = item.payload,
-           let entry = clipboardStore.imageEntries.first(where: { $0.id == hash })
-        {
-            return ClipboardClipDetails(
-                appBundleID: entry.appBundleID, firstCopiedAt: entry.firstCapturedAt,
-                lastCopiedAt: entry.capturedAt, copyCount: entry.copyCount, imageSize: item.meta
-            )
-        }
-        return nil
-    }
-
-    /// Clipboard: resting on a row (mouse or arrow keys) for `clipPreviewDelay` opens the side preview.
-    private func scheduleClipPreview() {
-        guard isClipboard, !clipPreviewShown else { return }
-        clipPreviewTask?.cancel()
-        clipPreviewTask = Task { @MainActor in
-            try? await Task.sleep(for: Self.clipPreviewDelay)
-            guard !Task.isCancelled, isOpen, !dismissing, isClipboard else { return }
-            withAnimation(motion(SpotlightMotion.chip)) { clipPreviewShown = true }
-        }
-    }
-
-    private func closeClipPreview() {
-        clipPreviewTask?.cancel()
-        clipPreviewTask = nil
-        clipPreviewShown = false
-    }
-
-    /// Secondary line under the name. Apps don't need one (the name is enough); action rows show the item name.
-    private func rowMeta(_ item: SpotlightItem) -> String? {
-        switch item.kind {
-        case .app: return nil
-        case .cmd: return nil
-        default: return item.meta ?? item.kind.label
-        }
-    }
-
-    private func keyCap(_ label: String) -> some View {
-        Text(label)
-            .font(.system(size: 12))
-            .fixedSize()
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(palette.kbd, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     private var footer: some View {
@@ -951,20 +776,6 @@ struct SpotlightLauncherView: View {
             Text("esc close")
                 .fixedSize()
             Spacer(minLength: 8)
-            if isClipboard {
-                let armed = armedConfirm == "clipclear"
-                Button {
-                    confirm("clipclear", prompt: "Click Clear again to delete all clipboard history") {
-                        clipboardStore.clearHistory()
-                        toast("Clipboard cleared")
-                    }
-                } label: {
-                    Text(armed ? "Click again to clear" : "Clear all")
-                        .fixedSize()
-                        .foregroundStyle(armed ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-                }
-                .buttonStyle(.plain)
-            }
             if !results.isEmpty {
                 Text("\(results.count) \(results.count == 1 ? "result" : "results")")
                     .fixedSize()
@@ -1001,11 +812,7 @@ struct SpotlightLauncherView: View {
         }
         let mode = browse.map { SpotlightMode.forTab($0, query: query) ?? .search } ?? SpotlightMode.parse(query)
         var hint = "↑↓ select   " + mode.footerHint
-        let previewable = switch mode {
-        case .search, .clipboard: true
-        default: false
-        }
-        if previewable, let combo = SpotlightQuickLook.shortcut {
+        if mode == .search, let combo = SpotlightQuickLook.shortcut {
             hint += "   \(combo.display) quick look"
         }
         return hint
@@ -1045,8 +852,6 @@ struct SpotlightLauncherView: View {
         searchTask = nil
         fileTask?.cancel()
         fileTask = nil
-        ocrPollTask?.cancel()
-        ocrPollTask = nil
         // Has text: the 4 round buttons merge back into the bar immediately, without waiting for results.
         pokeIdle()
 
@@ -1075,10 +880,6 @@ struct SpotlightLauncherView: View {
         if browse == nil, refreshMode(SpotlightMode.parse(query)) { return }
 
         let request = SpotlightRequest(text: query, browse: browse)
-        if inOCR {
-            searchContent(request.term)
-            return
-        }
         guard !request.isEmpty else {
             if suggestionsEnabled, isOpen {
                 refreshSuggestions()
@@ -1360,7 +1161,7 @@ struct SpotlightLauncherView: View {
     ///                             website, a browser app → your bookmarks and history
     /// nil when nothing applies (Tab then cycles the filter pills).
     private func tagCandidate(keyword: String? = nil) -> (tag: SearchTag, rest: String)? {
-        guard scope == nil, activeCommand == nil, !inModeTab else { return nil }
+        guard scope == nil, activeCommand == nil, !inProcessTab else { return nil }
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         // Nothing typed: Tab only cycles Lumio's own pills, never a Fluent-style tag
         // from the selected result.
@@ -1386,7 +1187,7 @@ struct SpotlightLauncherView: View {
             found = (context, "")
         }
         guard let found else { return nil }
-        // Lumio's own tabs (`apps`, `clipboard`…) and web tags don't stack.
+        // Lumio's launcher tabs and web tags do not stack.
         if !tagStack.isEmpty, found.0.mode != nil || tag?.stacked(with: found.0) == nil { return nil }
         // The same tag twice does nothing.
         if tagStack.contains(where: { $0.keyword == found.0.keyword }) { return nil }
@@ -1399,7 +1200,7 @@ struct SpotlightLauncherView: View {
         case .folder:
             guard let path = item.target, isDirectory(path) else { return nil }
             return .folder(path)
-        case .doc, .content:
+        case .doc:
             // Fluent: "press TAB to search for psd files". The folder is ⌘R (Search in Parent Folder).
             guard let path = item.target, path.hasPrefix("/") else { return nil }
             let ext = (path as NSString).pathExtension.lowercased()
@@ -1438,7 +1239,7 @@ struct SpotlightLauncherView: View {
     /// Tab (or ⏎ on a hint row): lock the tag in as a chip. False when nothing applies.
     private func enterTag(keyword: String? = nil) -> Bool {
         guard let (found, rest) = tagCandidate(keyword: keyword) else { return false }
-        // `apps`, `content`, `clipboard`…: one of Lumio's own tabs rather than a chip.
+        // A launcher tab is opened directly.
         if let raw = found.mode, let kind = SpotlightKind(rawValue: raw) {
             openTab(kind, text: rest)
             return true
@@ -1570,7 +1371,7 @@ struct SpotlightLauncherView: View {
             lockTag(tag, rest: "")
         }
         switch item.kind {
-        case .doc, .content, .folder:
+        case .doc, .folder:
             guard item.isFileTarget, let path = item.target else { return [] }
             var chips: [PreviewChip] = []
             let isFolder = item.kind == .folder
@@ -1639,11 +1440,6 @@ struct SpotlightLauncherView: View {
             case .message(let text): toast(text)
             }
         }
-        func copy(_ text: String, _ message: String) {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            toast(message)
-        }
         let open = PreviewAction(id: "open", label: "Open", symbol: "arrow.up.forward.app", shortcut: "⏎") { run(item) }
 
         switch item.kind {
@@ -1677,7 +1473,6 @@ struct SpotlightLauncherView: View {
                     toast("Force quit \(item.name)")
                 })
             }
-            list.append(PreviewAction(id: "copy", label: "Copy Path", symbol: "doc.on.doc", shortcut: "⌘⇧C") { copy(path, "Copied path") })
             list.append(pinAction(for: item))
             if AppDocuments.tag(forApp: path) != nil {
                 list.append(PreviewAction(id: "files", label: "Search Its Files", symbol: "doc.on.doc", shortcut: "⇥") {
@@ -1714,7 +1509,7 @@ struct SpotlightLauncherView: View {
                 },
             ]
 
-        case .doc, .content, .folder:
+        case .doc, .folder:
             guard item.isFileTarget, let path = item.target else { return [] }
             let isFolder = item.kind == .folder
             let inside = isFolder ? path : (path as NSString).deletingLastPathComponent
@@ -1738,14 +1533,6 @@ struct SpotlightLauncherView: View {
                     _ = performLocal(.openInEditor, on: item)
                 })
             }
-            list.append(PreviewAction(id: "copy", label: "Copy Path", short: "", symbol: "doc.on.doc", shortcut: "⌘⇧C") {
-                copy(path, "Copied path")
-            })
-            list.append(PreviewAction(id: "copyfile", label: isFolder ? "Copy Folder" : "Copy File", symbol: "doc.on.clipboard") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.writeObjects([URL(fileURLWithPath: path) as NSURL])
-                toast("Copied \(item.name): paste it in a folder or an app")
-            })
             list.append(PreviewAction(id: "rename", label: "Rename…", symbol: "character.cursor.ibeam") { rename(item, path: path) })
             list.append(pinAction(for: item))
             if SpotlightBackend.trashAction(for: item) == .moveToTrash {
@@ -1766,7 +1553,6 @@ struct SpotlightLauncherView: View {
                 id: "open", label: item.kind == .tab ? "Switch to Tab" : "Open",
                 symbol: item.kind == .tab ? "arrow.left.arrow.right" : "arrow.up.forward.app", shortcut: "⏎"
             ) { run(item) }]
-            list.append(PreviewAction(id: "copy", label: "Copy URL", symbol: "link", shortcut: "⌘⇧C") { copy(link, "Copied link") })
             // Fluent's "Search" (Ctrl+E): put the address back in the field to edit or re-search it.
             list.append(PreviewAction(id: "edit", label: "Edit in Search Field", symbol: "pencil") {
                 query = link
@@ -1785,38 +1571,6 @@ struct SpotlightLauncherView: View {
         }
     }
 
-    /// OCR tab: search the text inside images / PDFs (ContentIndex) instead of names.
-    private func searchContent(_ term: String) {
-        // First keystroke searches immediately; further typing waits a short beat.
-        let debounce: Duration = expanded ? SpotlightBackend.debounce : .zero
-        let limit = SpotlightBackend.resultLimit
-        searchTask = Task { @MainActor in
-            if debounce > .zero {
-                try? await Task.sleep(for: debounce)
-                guard !Task.isCancelled else { return }
-            }
-            let skippedFolders = themeStore.excludedFolderPaths
-            let (hits, status) = await Task.detached(priority: .userInitiated) {
-                let hits = ContentIndex.shared.search(term, limit: limit)
-                    .filter { !ContentIndexConfig.isExcluded($0.path, by: skippedFolders) }
-                return (hits, ContentIndex.shared.status())
-            }.value
-            guard !Task.isCancelled else { return }
-            searchTask = nil
-            publish(SpotlightBackend.contentRows(hits: hits, term: term, status: status))
-            // Only while nothing is listed: re-publishing real rows would reset the selection.
-            if hits.isEmpty, status.indexing { scheduleOCRPoll() }
-        }
-    }
-
-    private func scheduleOCRPoll() {
-        ocrPollTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, isOpen, inOCR else { return }
-            refresh()
-        }
-    }
-
     /// Tool tabs / commands. `false` = the typed text is a normal search, so refresh continues down to the core.
     private func refreshMode(_ mode: SpotlightMode) -> Bool {
         switch mode {
@@ -1829,89 +1583,11 @@ struct SpotlightLauncherView: View {
             } else {
                 publish(SpotlightModeRows.commandMenu(filter))
             }
-        case .clipboard(let term):
-            searchClipboard(term)
-        case .lookup(let word):
-            publish(SpotlightModeRows.lookup(word))
-        case .translate(let text):
-            startTranslation(text)
         case .process(let term):
             processModel.loadSnapshotIfNeeded()
             publish(SpotlightModeRows.processes(processModel, term: term))
         }
         return true
-    }
-
-    /// Clipboard tab. A typed term is matched by the core over each clip's whole text, off
-    /// the main thread (the list itself only holds previews), so it follows the same
-    /// debounce / cancel pattern as the other searches and stale results never land. An
-    /// empty term has nothing to look up and publishes after a task hop, which also means
-    /// the store's own change (this runs from `$entries`) has finished by then.
-    private func searchClipboard(_ term: String) {
-        let debounce: Duration = expanded && !term.isEmpty ? SpotlightBackend.debounce : .zero
-        searchTask = Task { @MainActor in
-            if debounce > .zero {
-                try? await Task.sleep(for: debounce)
-                guard !Task.isCancelled else { return }
-            }
-            let rows = await SpotlightModeRows.clipboardAll(clipboardStore, term: term)
-            // Text changed while searching: these results are stale.
-            guard !Task.isCancelled else { return }
-            searchTask = nil
-            publish(rows)
-        }
-    }
-
-    /// tr": the target-language rows show right away; the translations fill in once typing pauses.
-    /// Runs as `searchTask`, so an Enter pressed meanwhile waits and copies the fresh translation.
-    private func startTranslation(_ text: String) {
-        let source = text.isEmpty ? nil : TextTranslator.detectLanguage(of: text, likely: TranslationLanguage.all)
-        let rows = SpotlightModeRows.translation(text, source: source)
-        // First keystroke (panel not expanded yet) translates immediately; further typing waits a beat.
-        let debounce: Duration = expanded ? .milliseconds(200) : .zero
-        // Coming from another mode: the old results belong to some earlier text.
-        if all.first?.kind != .translation { translation.results = [:] }
-        translation.text = text
-        translation.sourceName = source.map(TextTranslator.displayName(of:))
-        translation.isTranslating = !rows.isEmpty
-        // Same targets as before: keep the rows (and the selection) as they are.
-        if !expanded || rows.map(\.id) != all.map(\.id) { publish(rows) }
-        guard !rows.isEmpty else { return }
-
-        let targets = rows.compactMap { TranslationLanguage.named($0.payload) }
-        // Already translated (reopened on the same text, or typed it again): show it now,
-        // with no debounce, no "Translating…" flash and no API call.
-        if let cached = TextTranslator.cachedTranslations(text, from: source, to: targets) {
-            searchTask?.cancel()
-            searchTask = nil
-            translation.results = cached
-            translation.isTranslating = false
-            if activateWhenReady {
-                activateWhenReady = false
-                activate()
-            }
-            return
-        }
-        searchTask = Task { @MainActor in
-            if debounce > .zero {
-                try? await Task.sleep(for: debounce)
-                guard !Task.isCancelled else { return }
-            }
-            let results = await SpotlightModeRows.translate(text, from: source, to: targets)
-            // Text changed while translating: these results are stale.
-            guard !Task.isCancelled else { return }
-            searchTask = nil
-            translation.results = results
-            translation.isTranslating = false
-            if activateWhenReady {
-                activateWhenReady = false
-                activate()
-            }
-        }
-    }
-
-    private func isMode(_ kind: SpotlightKind) -> Bool {
-        activeCommand == nil && scope == nil && browse == kind
     }
 
     /// Enters a command (`:kill`, `:emptytrash`, `:help`). The text after the command name becomes its argument.
@@ -2075,9 +1751,7 @@ struct SpotlightLauncherView: View {
     /// ⌘⇧; / the Settings button: re-read the config file.
     private func reloadConfig() {
         let result = ThemeStore.shared.reloadFromConfig()
-        clipboardStore.reloadFromConfig()
         loadRetention()
-        ContentIndex.shared.reloadConfig()
         SearchTags.reload()
         FileManagerApp.reload()
         suggestionsEnabled = RecentItems.isEnabled
@@ -2110,7 +1784,7 @@ struct SpotlightLauncherView: View {
         retentionSeconds = QueryRetentionPolicy.resolveSeconds(from: ConfigFileLines.keyValues(raw))
     }
 
-    /// `lumio clipboard` (and other launch modes): open straight into that query.
+    /// A launch mode such as `lumio apps`: open straight into that query.
     private func applyLaunchQuery(_ text: String) {
         show()
         let launch = SpotlightMode.tab(fromLaunchQuery: text)
@@ -2118,19 +1792,14 @@ struct SpotlightLauncherView: View {
     }
 
     /// A tab's global shortcut (Settings ▸ Shortcuts): open the launcher straight on that tab, or
-    /// close it when that tab is already in front. Dictionary / Translate start from the text
-    /// selected in the app in front, like Option+Space does.
+    /// close it when that tab is already in front.
     private func openFromHotKey(_ tab: SpotlightKind) {
         if isOpen, !dismissing, NSApp.isActive, browse == tab, scope == nil, activeCommand == nil {
             hide()
             return
         }
-        let wantsSelection = tab == .lookup || tab == .translation
-        if !wantsSelection { selectionTask?.cancel() }
-        let read = wantsSelection ? startSelectionRead() : nil
         show()
         openTab(tab, text: "")
-        if let read { applySelection(read) { text in query = text } }
     }
 
     /// A tag's global shortcut (Settings ▸ Shortcuts): open the launcher already inside that
@@ -2190,9 +1859,9 @@ struct SpotlightLauncherView: View {
     }
 
     private func isSkippedFileRow(_ item: SpotlightItem) -> Bool {
-        guard item.kind == .doc || item.kind == .folder || item.kind == .content,
+        guard item.kind == .doc || item.kind == .folder,
               let path = item.target else { return false }
-        return ContentIndexConfig.isExcluded(path, by: themeStore.excludedFolderPaths)
+        return FileSearchPaths.isExcluded(path, by: themeStore.excludedFolderPaths)
     }
 
     /// Shows the results. Expands the panel if it isn't already.
@@ -2264,7 +1933,6 @@ struct SpotlightLauncherView: View {
         withAnimation(motion(SpotlightMotion.selectionGlide)) { sel = next }
         scrollWraps = wrapped
         scrollTarget = results[sel].id
-        scheduleClipPreview()
     }
 
     /// Enter.
@@ -2282,21 +1950,6 @@ struct SpotlightLauncherView: View {
         }
         guard expanded, sel < results.count else { return }
         run(results[sel])
-    }
-
-    /// Enter on a clip: its text is in the database, not in the row, so it is loaded first
-    /// (off the main thread) and written to the pasteboard once it arrives.
-    private func copyClip(_ item: SpotlightItem) {
-        guard let id = item.clipID else { toast("Nothing to copy"); return }
-        Task { @MainActor in
-            guard let text = await clipboardStore.content(of: id) else {
-                toast("Nothing to copy")
-                return
-            }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            hide()
-        }
     }
 
     /// Opens a row (or runs its action when in actions mode).
@@ -2369,33 +2022,6 @@ struct SpotlightLauncherView: View {
         case .tagHint:
             _ = enterTag(keyword: item.payload)
             return
-        case .content where item.target == nil:
-            // OCR tab status row: nothing to open.
-            return
-        case .clipImage:
-            if let hash = item.payload,
-               let entry = clipboardStore.imageEntries.first(where: { $0.id == hash }),
-               clipboardStore.copyImage(entry: entry)
-            {
-                hide()
-            } else {
-                toast("Couldn't copy image")
-            }
-            return
-        case .clip:
-            copyClip(item)
-            return
-        case .lookup:
-            return  // definitions are already shown in the right half
-        case .translation:
-            if let text = translation.result(for: item.payload)?.text {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-                toast("Copied translation")
-            } else {
-                toast("Nothing to copy")
-            }
-            return
         case .process:
             guard let pid = item.pid else { return }
             if activeCommand == SpotlightCommands.kill {
@@ -2414,12 +2040,6 @@ struct SpotlightLauncherView: View {
             case .killProcess:
                 killProcess(scope)
                 exitChip()
-            case .copyPID:
-                if let pid = scope.pid {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(String(pid), forType: .string)
-                    toast("Copied PID \(pid)")
-                }
             default:
                 break
             }
@@ -2488,7 +2108,7 @@ struct SpotlightLauncherView: View {
         }
     }
 
-    /// Escape always closes the launcher, even inside a mode (Clipboard, Dictionary, …).
+    /// Escape closes the launcher from any tab or search.
     /// ⌫ on an empty field still leaves the mode without closing.
     private func handleEscape() {
         // Esc first drops the Tab focus on a round button, then closes.
@@ -2613,15 +2233,6 @@ struct SpotlightLauncherView: View {
             lockTag(.folder(item.kind == .folder ? path : (path as NSString).deletingLastPathComponent), rest: "")
             return true
         }
-        // ⌘⇧C: copy the selected result's path or link.
-        if flags == [.command, .shift], key == "c", let item = previewItem,
-           let text = item.tab?.url ?? item.target
-        {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-            toast(text.hasPrefix("/") ? "Copied path" : "Copied link")
-            return true
-        }
         if flags == .command, key == "/" {
             toggleCommandMode()
             return true
@@ -2639,21 +2250,12 @@ struct SpotlightLauncherView: View {
             return true
         }
         if flags == .command, key == "d", let item = previewItem {
-            // Clipboard rows: ⌘D removes the clip from history instead.
-            if !deleteClip(item) {
-                performShortcut(SpotlightBackend.trashAction(for: item) ?? .moveToTrash)
-            }
+            performShortcut(SpotlightBackend.trashAction(for: item) ?? .moveToTrash)
             return true
         }
         // Quick Look the selected row, like Finder (⌘Y unless changed in Settings ▸ Shortcuts).
         if SpotlightQuickLook.matchesShortcut(event) {
             if let item = previewItem { SpotlightQuickLook.toggle(item: item) }
-            return true
-        }
-        if flags == .command, key == "p", let item = previewItem,
-           item.kind == .clip || item.kind == .clipImage
-        {
-            togglePin(item)
             return true
         }
         // ⌘↩ — search the web for the typed text (like the legacy launcher).
@@ -2665,7 +2267,7 @@ struct SpotlightLauncherView: View {
         }
         // ⌘F — show the selected item in Finder (like the legacy launcher).
         if flags == .command, key == "f", let item = previewItem,
-           item.target?.hasPrefix("/") == true, item.kind != .clipImage
+           item.target?.hasPrefix("/") == true
         {
             switch SpotlightOpener.perform(.reveal, on: item) {
             case .launched: hide(restore: false, launched: true)
@@ -2738,10 +2340,7 @@ struct SpotlightLauncherView: View {
             armedKillPID = nil
             armedConfirm = nil
             trashCount = nil
-            translation = SpotlightTranslationBatch()
             panelHeight = Metric.barHeight
-            closeClipPreview()
-            hoveredRow = nil
         }
     }
 
@@ -2756,43 +2355,7 @@ struct SpotlightLauncherView: View {
             hide()
             return
         }
-        // Text selected in the app in front: open straight on its lookup (tw"). The read must
-        // target the app that is in front BEFORE Lumio takes focus, so its pid is captured and
-        // the read starts first; the (slow) Accessibility IPC then runs off the main thread
-        // while the launcher appears, and the result is applied only if nothing changed.
-        let read = startSelectionRead()
         show()
-        if let read {
-            applySelection(read) { text in openTab(.lookup, text: text) }
-        }
-    }
-
-    /// Starts reading the selection of the frontmost app (not Lumio) on a background thread.
-    /// nil when there is no other frontmost app.
-    private func startSelectionRead() -> Task<String?, Never>? {
-        selectionTask?.cancel()
-        selectionTask = nil
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              front.processIdentifier != ProcessInfo.processInfo.processIdentifier
-        else { return nil }
-        let pid = front.processIdentifier
-        return Task.detached(priority: .userInitiated) {
-            SelectedTextReader.selection(pid: pid)
-        }
-    }
-
-    /// Waits for `read` and, if the launcher is still open exactly as `show()` left it (no
-    /// typing, no other tab, not closed or reopened since), hands the text to `apply`.
-    private func applySelection(_ read: Task<String?, Never>, apply: @escaping @MainActor (String) -> Void) {
-        let guardrail = SelectionApplyGuard(queryAtShow: query, browseAtShow: browse)
-        selectionTask = Task { @MainActor in
-            guard let text = await read.value, !Task.isCancelled,
-                  guardrail.shouldApply(
-                      isOpen: isOpen, dismissing: dismissing, query: query, browse: browse,
-                      inScope: scope != nil, hasActiveCommand: activeCommand != nil)
-            else { return }
-            apply(text)
-        }
     }
 
     private func show() {
@@ -2842,8 +2405,6 @@ struct SpotlightLauncherView: View {
             ExternalDrives.isEnabled = LauncherConfigFile.value(ExternalDrives.configKey).map {
                 !["false", "0", "no", "off"].contains($0.lowercased())
             } ?? true
-            // Exchange rates for currency conversion: at most twice a day, in the background.
-            CurrencyRates.shared.refreshIfStale()
             // Which apps are running, for the dot on their rows.
             runningApps = Set(NSWorkspace.shared.runningApplications
                 .filter { $0.activationPolicy == .regular }
@@ -2855,14 +2416,11 @@ struct SpotlightLauncherView: View {
                 BrowserBookmarks.warm()
                 await MainActor.run { SearchTags.reload() }
             }
-            // While open, poll the clipboard more often (like the legacy launcher).
-            clipboardStore.setMonitoringMode(.foreground)
             // Fresh open: go to the hidden state WITHOUT animation, position the window, and only then
             // animate on the next tick — the two states must be in two transactions.
             resetState()
             // Bring back the search from last time (sets the query after the reset, so it re-runs).
-            // A plain search is dropped after `query_retention_seconds`; a tab (Dictionary,
-            // Translate, …) always comes back as it was left.
+            // A plain search expires after `query_retention_seconds`; tabs keep their query.
             if keptBrowse == nil,
                QueryRetentionPolicy.shouldClear(hiddenAt: hiddenAt, seconds: retentionSeconds) {
                 keptQuery = ""
@@ -2918,7 +2476,6 @@ struct SpotlightLauncherView: View {
         guard isOpen, !dismissing, let window = launcherWindow() else { return }
         dismissing = true
         idleTask?.cancel()
-        selectionTask?.cancel()
         isFocused = false
         // Quick Look belongs to the launcher: don't leave it floating on its own.
         SpotlightQuickLook.close()
@@ -2958,8 +2515,6 @@ struct SpotlightLauncherView: View {
             isOpen = false
             dismissing = false
             resetState()
-            // Hidden: poll the clipboard less often; next time ps" is entered, take a fresh process snapshot.
-            clipboardStore.setMonitoringMode(.background)
             processModel.invalidate()
             // Hidden: drop the caches that are only there for speed on screen, but only once
             // the launcher has stayed hidden a while (show() cancels this; the condition
@@ -3106,15 +2661,13 @@ struct SpotlightTile: View {
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: item.kind == .clipImage ? size * 0.18 : 0, style: .continuous))
                 .frame(width: size, height: size)
         } else {
             colorTile
         }
     }
 
-    /// Real icon: app/file/folder, the process's app, thumbnail of a copied
-    /// image. Cached: NSWorkspace returns a new image on every call; without caching the
+    /// Real icon for an app, file, folder or process. Cached: NSWorkspace returns a new image on every call; without caching the
     /// icon flickers on every keystroke.
     private var realImage: NSImage? {
         if item.kind == .process, let pid = item.pid {
@@ -3122,13 +2675,10 @@ struct SpotlightTile: View {
                 RowIconCache.rasterized(LauncherProcessFeature.icon(forPID: pid), points: RowIconCache.iconPoints)
             }
         }
-        if item.kind == .clipImage, let path = item.iconPath {
-            return RowIconCache.thumbnail(forFile: path)
-        }
         return item.iconPath.map { RowIconCache.icon(forFile: $0) }
     }
 
-    /// Colored tile for rows with no real file (calculation, web, actions, sample data).
+    /// Colored tile for rows with no real file (web, actions, sample data).
     private var colorTile: some View {
         let pair = item.colors.split(separator: ",").map(String.init)
         let c1 = Color(hex: pair.first ?? "#9aa2ad")
@@ -3160,20 +2710,15 @@ private struct SpotlightModeHooks: ViewModifier {
     let activeCommand: String?
     let previewID: String?
     @ObservedObject var processModel: ProcessFinderModel
-    @ObservedObject var clipboardStore: ClipboardHistoryStore
     let onCommandChange: () -> Void
     let onPreviewChange: () -> Void
     let onProcesses: () -> Void
-    let onClips: () -> Void
-    let onImages: () -> Void
 
     func body(content: Content) -> some View {
         content
             .onChange(of: activeCommand) { onCommandChange() }
             .onChange(of: previewID) { onPreviewChange() }
             .onReceive(processModel.$candidates) { _ in onProcesses() }
-            .onReceive(clipboardStore.$entries) { _ in onClips() }
-            .onReceive(clipboardStore.$imageEntries) { _ in onImages() }
     }
 }
 
@@ -3188,8 +2733,7 @@ struct SpotlightResultList {
     }
     /// `all` narrowed to the selected pill group.
     private(set) var results: [SpotlightItem] = []
-    /// Pills for the groups present in the results. OCR is not one of them: its pill is always
-    /// shown (last), since it switches to a different search rather than filtering this one.
+    /// Pills for the groups present in the current search. Processes has its own tab.
     private(set) var kinds: [SpotlightKind] = []
 
     /// Goes up whenever `results` changes, so a cache built from it knows when to rebuild.
@@ -3202,11 +2746,10 @@ struct SpotlightResultList {
         } else {
             results = all
         }
-        let modeTabs = SpotlightKind.modeTabs
         var seen: [SpotlightKind] = []
         for item in all {
             let group = item.kind.pillGroup
-            if !modeTabs.contains(group), !seen.contains(group) { seen.append(group) }
+            if group != .process, !seen.contains(group) { seen.append(group) }
         }
         kinds = seen
     }
@@ -3245,7 +2788,7 @@ private struct SpotlightDragSource: ViewModifier {
     }
 
     private static func fileURL(_ item: SpotlightItem) -> URL? {
-        guard [.doc, .content, .folder, .app, .clipImage].contains(item.kind),
+        guard [.doc, .folder, .app].contains(item.kind),
               let path = item.target, path.hasPrefix("/")
         else { return nil }
         return URL(fileURLWithPath: path)

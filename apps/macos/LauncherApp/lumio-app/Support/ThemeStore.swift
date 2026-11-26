@@ -4,7 +4,7 @@ import Foundation
 import ServiceManagement
 
 /// App settings kept in the config file (`~/.lumio/config`) and edited in Settings:
-/// file indexing, log level, launch at login, translation languages.
+/// file indexing, logging, shortcuts, and launch at login.
 final class ThemeStore: ObservableObject {
     // Shared so AppDelegate (which hosts ContentView in an AppKit window), the
     // Settings window and the launcher use the same store.
@@ -88,16 +88,6 @@ final class ThemeStore: ObservableObject {
             {
                 warnings.append("file_scan_limit=\(value) invalid (must be \(AppConstants.FileScan.minLimit)-\(AppConstants.FileScan.maxLimit))")
             }
-            if let value = values[AppConstants.Launcher.Clipboard.historyLimitConfigKey], let parsed = Int(value),
-               !ClipboardLimits.textRange.contains(parsed)
-            {
-                warnings.append("clipboard_history_limit=\(value) invalid (must be \(ClipboardLimits.textRange.lowerBound)-\(ClipboardLimits.textRange.upperBound))")
-            }
-            if let value = values[AppConstants.Launcher.ClipboardImage.limitConfigKey], let parsed = Int(value),
-               !ClipboardLimits.imageRange.contains(parsed)
-            {
-                warnings.append("clipboard_image_limit=\(value) invalid (must be \(ClipboardLimits.imageRange.lowerBound)-\(ClipboardLimits.imageRange.upperBound))")
-            }
         }
 
         applyOverridesFromConfigFile()
@@ -118,17 +108,13 @@ final class ThemeStore: ObservableObject {
         ConfigFileLines.upsert(&lines, key: "file_scan_depth", value: String(settings.fileScanDepth))
         ConfigFileLines.upsert(&lines, key: "file_scan_limit", value: String(settings.fileScanLimit))
         ConfigFileLines.upsert(&lines, key: "lazy_indexing_enabled", value: settings.lazyIndexingEnabled ? "true" : "false")
-        ConfigFileLines.upsert(&lines, key: AppConstants.Launcher.Clipboard.historyLimitConfigKey, value: String(settings.clipboardHistoryLimit))
-        ConfigFileLines.upsert(&lines, key: AppConstants.Launcher.ClipboardImage.limitConfigKey, value: String(settings.clipboardImageLimit))
         ConfigFileLines.upsert(&lines, key: "file_exclude_paths", value: ConfigFileLines.renderList(excludedFolderPaths))
         ConfigFileLines.upsert(&lines, key: "file_scan_extra_roots", value: ConfigFileLines.renderList(extraFileScanRoots))
         ConfigFileLines.upsert(&lines, key: "backend_log_level", value: settings.backendLogLevel.rawValue)
         ConfigFileLines.upsert(&lines, key: "launcher_corner_radius", value: String(Int(settings.launcherCornerRadius.rounded())))
         ConfigFileLines.upsert(&lines, key: "liquid_glass_enabled", value: settings.liquidGlassEnabled ? "true" : "false")
         ConfigFileLines.upsert(&lines, key: "launch_at_login", value: settings.launchAtLogin ? "true" : "false")
-        ConfigFileLines.upsert(&lines, key: "translation_languages", value: settings.translationLanguages.joined(separator: ","))
-        ConfigFileLines.upsert(&lines, key: TabOrder.configKey, value: TabOrder.render(settings.tabOrder))
-        ConfigFileLines.upsert(&lines, key: TabOrder.hiddenConfigKey, value: TabOrder.renderHidden(settings.hiddenTabs))
+        ConfigFileLines.upsert(&lines, key: HiddenTabs.configKey, value: HiddenTabs.render(settings.hiddenTabs))
         ConfigFileLines.upsert(&lines, key: QuickBubbles.configKey, value: QuickBubbles.render(settings.quickBubbles))
         for action in HotKeyAction.allCases {
             ConfigFileLines.upsert(&lines, key: action.configKey, value: settings.hotKey(for: action)?.configValue ?? "")
@@ -239,14 +225,6 @@ final class ThemeStore: ObservableObject {
                 if let parsed = parsePositiveInt(value) { settings.fileScanLimit = parsed }
             case "lazy_indexing_enabled":
                 if let parsed = parseBool(value) { settings.lazyIndexingEnabled = parsed }
-            case AppConstants.Launcher.Clipboard.historyLimitConfigKey:
-                // Same rule as ClipboardHistoryStore: out of range means the default, so the
-                // window shows the limit the store actually applies.
-                settings.clipboardHistoryLimit = ClipboardLimits.resolve(
-                    value, range: ClipboardLimits.textRange, fallback: ClipboardLimits.Text.maxEntries)
-            case AppConstants.Launcher.ClipboardImage.limitConfigKey:
-                settings.clipboardImageLimit = ClipboardLimits.resolve(
-                    value, range: ClipboardLimits.imageRange, fallback: ClipboardLimits.Image.maxEntries)
             case "file_exclude_paths":
                 excludedFolderPaths = parseExcludedFolderPaths(value)
             case "file_scan_roots":
@@ -264,16 +242,10 @@ final class ThemeStore: ObservableObject {
                 if let parsed = parseBool(value) { settings.liquidGlassEnabled = parsed }
             case "launch_at_login":
                 if let parsed = parseBool(value) { settings.launchAtLogin = parsed }
-            case TabOrder.configKey:
-                settings.tabOrder = TabOrder.parse(value)
-            case TabOrder.hiddenConfigKey:
-                settings.hiddenTabs = TabOrder.parseHidden(value)
+            case HiddenTabs.configKey:
+                settings.hiddenTabs = HiddenTabs.parse(value)
             case QuickBubbles.configKey:
                 settings.quickBubbles = QuickBubbles.parse(value)
-            case "translation_languages":
-                let codes = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                let known = codes.filter { TranslationLanguage.named($0) != nil }
-                if !known.isEmpty { settings.translationLanguages = Array(known.prefix(TranslationLanguage.maxSelected)) }
             default:
                 // hotkey_<action>: empty = off; a value that doesn't parse is ignored like any bad line.
                 guard let action = HotKeyAction.named(configKey: key) else { continue }
@@ -439,22 +411,12 @@ ignored_patterns_sample=
 # ignored_patterns_sqlite=~/Documents/git/project/**/*.db-wal|~/Documents/git/project/**/*.db-shm
 # ignored_patterns_temp=~/Downloads/*.tmp|~/Downloads/**/*.part
 lazy_indexing_enabled=true
-# OCR tab: search text inside images and PDFs under file_scan_roots.
-# false also deletes the stored text. content_index_limit = most files read, newest first.
-content_index_enabled=true
-content_index_limit=3000
-# Clipboard history: text clips to keep (10-1000) and image clips (5-50). Older clips are deleted
-# from the database; pinned clips are never removed.
-clipboard_history_limit=300
-clipboard_image_limit=20
 backend_log_level=error
 launch_at_login=true
-# Translator languages (tr" / tw"), 1-5 codes. Choices: en,vi,fr,ja,ko,zh-Hans,zh-Hant,es,de,it,pt,ru,th,id,hi,ar
-translation_languages=vi,en,fr
-# Order of the launcher's tabs: clip (Clipboard), lookup (Dictionary), translation (Translate), process (Processes), content (OCR)
-tab_order=clip,lookup,translation,process,content
+# Hide the Processes tab by setting tab_hidden=process. Its shortcut and search tag still open it.
+tab_hidden=
 # Shortcuts: hotkey_<action>=cmd+shift+v (modifiers: cmd, opt, ctrl, shift; empty = off).
-# Global actions: launcher, settings, clip (Clipboard), lookup (Dictionary), translation (Translate), process (Processes), content (OCR)
+# Global actions: launcher, settings, process (Processes), and search tag shortcuts
 # In the launcher only: quicklook (Quick Look the selected row)
 hotkey_launcher=opt+space
 hotkey_settings=cmd+shift+space

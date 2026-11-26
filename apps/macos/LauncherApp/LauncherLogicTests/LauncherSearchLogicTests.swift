@@ -29,7 +29,7 @@ final class LauncherSearchLogicTests: XCTestCase {
         XCTAssertEqual(LauncherSearchLogic.pinnedLookupScope(for: "a\"finder"), .apps)
         XCTAssertEqual(LauncherSearchLogic.pinnedLookupScope(for: "f\"report"), .files)
         XCTAssertEqual(LauncherSearchLogic.pinnedLookupScope(for: "d\"doc"), .folders)
-        XCTAssertEqual(LauncherSearchLogic.pinnedLookupScope(for: "c\"note"), .disabled)
+        XCTAssertEqual(LauncherSearchLogic.pinnedLookupScope(for: "c\"note"), .unscoped)
     }
 
     func testNormalizedPinnedQueryRespectsScope() {
@@ -42,7 +42,7 @@ final class LauncherSearchLogicTests: XCTestCase {
             "documents"
         )
         XCTAssertNil(
-            LauncherSearchLogic.normalizedPinnedLookupQuery(for: "c\"foo", scope: .disabled)
+            LauncherSearchLogic.normalizedPinnedLookupQuery(for: "finder", scope: .disabled)
         )
         XCTAssertNil(
             LauncherSearchLogic.normalizedPinnedLookupQuery(for: "   ", scope: .unscoped)

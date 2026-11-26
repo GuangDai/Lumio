@@ -70,21 +70,14 @@ Commit prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`.
 
 CI builds the release with this same script.
 
+## GitHub Actions
+
+The [CI workflow](.github/workflows/ci.yml) builds and uploads an Apple Silicon DMG when changes are pushed to `main` or a pull request targets it. It also supports manual runs.
+
 ## Releasing (maintainers)
 
 ```bash
-# 1. Commit and push to main, then tag (runs cargo tests + build.sh first):
 ./scripts/release.sh v1.2.3
-
-# 2. Nothing else. CI (release.yml) builds Lumio.dmg, publishes the GitHub release
-#    and runs notify-update.sh. Only if its `notify-users` job fails, run by hand:
-./scripts/notify-update.sh v1.2.3
 ```
 
-- The version comes from the tag: `vX.Y.Z`, never reused, and newer than the last release (Sparkle only offers newer versions). `release.sh` refuses a dirty tree or a commit that isn't on `origin/main`. `--skip-checks` skips the local tests and build.
-- `notify-update.sh` tells users two ways, like Ice:
-  - **Sparkle** (in-app): adds the release to `lumio/appcast.xml` in [cavaldos/macos-app-releases](https://github.com/cavaldos/macos-app-releases) (shared with other apps), served at `https://cavaldos.github.io/macos-app-releases/lumio/appcast.xml` (`SUFeedURL`). Installed apps check it daily, then download, verify and install the update.
-  - **Homebrew**: points the `lumio` cask in [cavaldos/homebrew-tap](https://github.com/cavaldos/homebrew-tap) at the new `Lumio.dmg`.
-- Updates are signed with the same EdDSA key as Ice (`~/.sparkle/sparkle-priv.pem`; its public half is `SUPublicEDKey` in `lumio-app/Info.plist`). Never lose or rotate it: installed apps reject updates signed with another key.
-- The `notify-users` job needs four repo secrets: `SPARKLE_PRIVATE_KEY` (that key file), `MACOS_APP_RELEASES_DEPLOY_KEY`, `LUMIO_RELEASES_DEPLOY_KEY` and `HOMEBREW_TAP_DEPLOY_KEY` (private halves of write deploy keys on `macos-app-releases`, `lumio-releases` and `homebrew-tap`). Lumio v0.0.5 and older still read `cavaldos/lumio-releases`, so the appcast is mirrored there too; once most users have updated, set `LEGACY_REPO=""` in `scripts/notify-update.sh`, drop `LUMIO_RELEASES_DEPLOY_KEY`, and delete that repo. Running `notify-update.sh` by hand needs `gh auth login`, Sparkle's `generate_appcast` and your own push access instead.
-- Sparkle is off in Debug builds and in Lumio Dev (`make app-run-dev`, `lumiodev`), so it never replaces a dev build with a release.
+`release.sh` runs the Rust tests and the local DMG build, then pushes the tag to `origin`. The [Release workflow](.github/workflows/release.yml) builds and attaches the DMG to the GitHub release. Use `--skip-checks` to skip the local checks.

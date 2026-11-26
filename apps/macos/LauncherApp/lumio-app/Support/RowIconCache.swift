@@ -19,9 +19,8 @@ nonisolated enum RowIconCache {
         return c
     }()
 
-    /// The largest a cached file icon is ever shown, in points (rows draw 30, the folder
-    /// list 18, the clip details 14). Callers that need a bigger icon (the preview header)
-    /// ask NSWorkspace directly instead of this cache.
+    /// Cached icons fit the result rows and folder listings. The preview header
+    /// asks NSWorkspace for a larger icon.
     static let iconPoints: CGFloat = 32
 
     /// Pixels per point of the cached bitmap: Retina.
@@ -65,17 +64,6 @@ nonisolated enum RowIconCache {
         let result = NSImage(size: NSSize(width: points, height: points))
         result.addRepresentation(rep)
         return result
-    }
-
-    /// The picture itself, for a row that IS one. Small on disk already, so the
-    /// list never decodes the full-size original.
-    static func thumbnail(forFile path: String) -> NSImage? {
-        if let cached = cache.object(forKey: path as NSString) {
-            return cached
-        }
-        guard let image = NSImage(contentsOfFile: path) else { return nil }
-        cache.setObject(image, forKey: path as NSString)
-        return image
     }
 
     /// Drops every icon. Called by `MemoryTrim` once the launcher has stayed hidden a while

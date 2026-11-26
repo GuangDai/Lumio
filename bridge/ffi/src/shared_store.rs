@@ -1,7 +1,5 @@
-//! The one long-lived `SqliteStore` connection behind the clipboard, URL
-//! history and usage endpoints. `SqliteStore::open` re-runs the whole
-//! migration, and these endpoints run on every copy made in the OS and on every
-//! search keystroke, so they borrow this connection instead of opening one.
+//! The cached `SqliteStore` connection for URL history and usage endpoints.
+//! This avoids rerunning database migrations on every search keystroke.
 
 use crate::state::default_db_path;
 use lumio_storage::SqliteStore;
@@ -19,7 +17,10 @@ static SHARED_STORE: OnceLock<Mutex<Cached>> = OnceLock::new();
 /// for the store call, and never while calling anything that takes it again.
 /// `None` inside means the open failed; the next call retries.
 pub(crate) fn store() -> MutexGuard<'static, Cached> {
-    lock_for(SHARED_STORE.get_or_init(|| Mutex::new(None)), default_db_path())
+    lock_for(
+        SHARED_STORE.get_or_init(|| Mutex::new(None)),
+        default_db_path(),
+    )
 }
 
 fn lock_for(cell: &'static Mutex<Cached>, path: PathBuf) -> MutexGuard<'static, Cached> {

@@ -147,7 +147,7 @@ nonisolated enum SpotlightFiles {
         // No folder asked for: the home folder plus any plugged-in drives.
         let insideUserFolders = scope.folders.isEmpty
         let folders = (insideUserFolders ? [NSHomeDirectory()] + ExternalDrives.searchPaths : scope.folders)
-            .filter { !ContentIndexConfig.isExcluded($0, by: skippedFolders) }
+            .filter { !FileSearchPaths.isExcluded($0, by: skippedFolders) }
         // An explicitly skipped scope must not fall back to a whole-Mac search.
         guard !folders.isEmpty else { return [] }
 
@@ -199,7 +199,7 @@ nonisolated enum SpotlightFiles {
         let needle = words.joined(separator: " ")
         return hits
             .filter { isUserFile($0.path, home: home, strict: insideUserFolders)
-                && !ContentIndexConfig.isExcluded($0.path, by: skippedFolders) }
+                && !FileSearchPaths.isExcluded($0.path, by: skippedFolders) }
             // Code and config files last (unless an extension was asked for, e.g. "align.ts").
             .map { hit in
                 (hit, nameScore(hit.name.lowercased(), needle: needle, words: words)

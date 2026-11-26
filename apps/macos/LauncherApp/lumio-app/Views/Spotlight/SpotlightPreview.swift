@@ -54,10 +54,6 @@ struct SpotlightPreviewView: View {
     var measuringCPU = false
     /// A file or folder in the folder listing was clicked: (path, isFolder).
     var onOpenPath: (String, Bool) -> Void = { _, _ in }
-    /// tw" — a linked word in a dictionary entry was clicked.
-    var onLookup: (String) -> Void = { _ in }
-    /// tr" — translations of the typed text.
-    var translation = SpotlightTranslationBatch()
 
     @State private var info = Info()
     @State private var folder: FolderListing?
@@ -76,7 +72,7 @@ struct SpotlightPreviewView: View {
 
     /// Results that get the Fluent-style card: something to open, with actions.
     private var usesCard: Bool {
-        !actions.isEmpty && [.doc, .content, .folder, .app, .url, .tab, .web, .setting, .window].contains(item.kind)
+        !actions.isEmpty && [.doc, .folder, .app, .url, .tab, .web, .setting, .window].contains(item.kind)
     }
 
     /// Files and folders have a real preview to switch to; apps and links only have the card.
@@ -85,18 +81,6 @@ struct SpotlightPreviewView: View {
     }
 
     var body: some View {
-        if item.kind == .lookup {
-            // Dictionary.app layout: the entry has its own headword, so no header / details.
-            SpotlightDictionaryView(word: item.payload ?? item.name, onLookup: onLookup)
-        } else if item.kind == .translation, let target = TranslationLanguage.named(item.payload) {
-            SpotlightTranslationView(batch: translation, target: target)
-        } else {
-            standard
-        }
-    }
-
-    @ViewBuilder
-    private var standard: some View {
         if usesCard, !(hasPreview && showsPreview) {
             card
         } else {
@@ -296,43 +280,17 @@ struct SpotlightPreviewView: View {
     @ViewBuilder
     private var content: some View {
         switch item.kind {
-        case .doc, .content:
+        case .doc:
             if let path = item.target {
                 if QuickLookPreviewService.isTextFile(path: path) {
                     SpotlightCodePreview(path: path)
                 } else {
                     QuickLookPreviewImage(path: path, maxHeight: .infinity)
                 }
-            } else if item.kind == .content {
-                // OCR tab status row.
-                Text(item.meta ?? "")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .folder:
             if let folder, let path = item.target {
                 folderList(folder, path: path)
-            }
-        case .calc where item.payload != nil:
-            VStack(alignment: .leading, spacing: 8) {
-                Text("= \(item.payload ?? "")")
-                    .font(.system(size: 34, weight: .medium).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                hint("⏎", "copy result")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        case .calc:
-            if let value = item.calcResult {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("= \(SpotlightCalc.format(value))")
-                        .font(.system(size: 34, weight: .medium).monospacedDigit())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.5)
-                    hint("⏎", "copy result")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .web where item.target != nil:
             // A search tag's search row: the exact address it opens.
@@ -364,23 +322,14 @@ struct SpotlightPreviewView: View {
                 .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        case .clip:
-            // Clip rows carry a title only; the clipboard tab's own pane loads the text.
-            textBox(item.name)
-        case .clipImage:
-            // A pane-sized thumbnail, not the original: decoding a copied 4K
-            // screenshot at full size is ~33 MB, on every render.
-            if let path = item.target {
-                QuickLookPreviewImage(path: path, maxHeight: .infinity)
-            }
         case .process:
             processContent
-        case .app, .cmd, .lookup, .translation:
+        case .app, .cmd:
             EmptyView()
         }
     }
 
-    /// Plain text in a frame (clipboard, a process's command line).
+    /// The process's command line.
     private func textBox(_ text: String) -> some View {
         ScrollView {
             Text(text)
@@ -503,7 +452,7 @@ struct SpotlightPreviewView: View {
     private static func immediateDetail(for item: SpotlightItem) -> String? {
         switch item.kind {
         case .setting: "System Settings"
-        case .clip, .clipImage, .process: item.meta
+        case .process: item.meta
         default: nil
         }
     }
@@ -514,10 +463,10 @@ struct SpotlightPreviewView: View {
         case .setting:
             info.detail = "System Settings"
             return info
-        case .clip, .clipImage, .process:
+        case .process:
             info.detail = item.meta
             return info
-        case .app, .doc, .content, .folder:
+        case .app, .doc, .folder:
             break
         default:
             return info
@@ -540,7 +489,7 @@ struct SpotlightPreviewView: View {
             info.version = plist?["CFBundleShortVersionString"] as? String
                 ?? plist?["CFBundleVersion"] as? String
             info.detail = info.version.map { "Version \($0)" }
-        case .doc, .content:
+        case .doc:
             if let size = attrs?[.size] as? Int64 {
                 info.detail = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
                 info.size = info.detail
@@ -956,7 +905,6 @@ extension SpotlightPreviewView {
             PreviewAction(id: "search", label: "Search in Parent Folder", short: "Search", symbol: "magnifyingglass", shortcut: "⌘R") {},
             PreviewAction(id: "terminal", label: "Open in Terminal", short: "Terminal", symbol: "terminal", shortcut: "⌘T") {},
             PreviewAction(id: "openwith", label: "Open With…", symbol: "arrow.up.forward.square") {},
-            PreviewAction(id: "copy", label: "Copy Path", short: "", symbol: "doc.on.doc", shortcut: "⌘⇧C") {},
             PreviewAction(id: "pin", label: "Pin to Home", symbol: "pin", shortcut: "⌘⇧P") {},
         ]
         let size = NSSize(width: 360, height: 392)

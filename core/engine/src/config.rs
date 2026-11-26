@@ -454,12 +454,6 @@ lazy_indexing_enabled=true\n\
 localized_app_names=false\n\
 skip_dir_names=node_modules,target,build,dist,library,applications,old firefox data,deriveddata,pods,vendor,out,coverage,tmp,cache,venv\n\
 \n\
-# Clipboard history size (10-1000). Out-of-range values fall back to 300.\n\
-# Pinned clips are kept on top of this. Lowering it also deletes the older\n\
-# clips from the database. Image clips: clipboard_image_limit (5-50, default 20).\n\
-clipboard_history_limit=300\n\
-clipboard_image_limit=20\n\
-\n\
 # How long the main query survives while Lumio is hidden, in seconds. 0 clears\n\
 # it on every hide; a negative value keeps it indefinitely.\n\
 query_retention_seconds=30\n\

@@ -6,9 +6,8 @@
 //  search app: ⏎ switches to the window, even a minimized one.
 //
 //  Window titles come from the Accessibility API, so this only works once Lumio is allowed
-//  under System Settings ▸ Privacy & Security ▸ Accessibility (the same permission the
-//  Dictionary shortcut uses to read the selected text). Without it there are simply no
-//  window rows; the `windows` tag says what to turn on.
+//  under System Settings ▸ Privacy & Security ▸ Accessibility. The `windows` tag shows
+//  how to grant access.
 //
 //  A snapshot is taken in the background each time the launcher opens. Every app gets a
 //  short time limit, so one frozen app cannot hold the others up.

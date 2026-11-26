@@ -12,9 +12,6 @@ enum LauncherSearchLogic {
     static func pinnedLookupScope(for query: String) -> LauncherPinnedLookupScope {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
-        if normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.clipboard) {
-            return .disabled
-        }
         if normalized.hasPrefix(AppConstants.Launcher.QueryPrefix.apps) {
             return .apps
         }

@@ -4,13 +4,13 @@ import Foundation
 // SpotlightBackend; SpotlightData is now just sample data for the motion lab.
 
 enum SpotlightKind: String, CaseIterable, Identifiable {
-    case app, folder, doc, content, setting, url, web, calc, cmd
+    case app, folder, doc, setting, url, web, cmd
     /// An open browser tab (⏎ switches to it) and the "press Tab to search YouTube" hint row.
     case tab, tagHint
     /// An open window of any app (⏎ switches to it).
     case window
     // Modes carried over from the legacy launcher (prefix / command).
-    case prefix, command, clip, clipImage, lookup, translation, process, help
+    case prefix, command, process, help
     var id: String { rawValue }
 
     var label: String {
@@ -18,21 +18,15 @@ enum SpotlightKind: String, CaseIterable, Identifiable {
         case .app: "Applications"
         case .folder: "Folders"
         case .doc: "Documents"
-        case .content: "OCR"
         case .setting: "Settings"
         case .url: "Links"
         case .web: "Web"
-        case .calc: "Calculator"
         case .cmd: "Actions"
         case .tab: "Tabs"
         case .tagHint: "Search Tags"
         case .window: "Windows"
         case .prefix: "Prefixes"
         case .command: "Commands"
-        case .clip: "Clipboard"
-        case .clipImage: "Clipboard"
-        case .lookup: "Lookup"
-        case .translation: "Translations"
         case .process: "Processes"
         case .help: "Help"
         }
@@ -43,26 +37,9 @@ enum SpotlightKind: String, CaseIterable, Identifiable {
     var pillGroup: SpotlightKind {
         switch self {
         case .setting: .app
-        case .clipImage: .clip  // images live in the Clipboard tab with the text clips
         case .tagHint: .web
         default: self
         }
-    }
-
-    /// Tool tabs: each switches the launcher into a tool (replaces the old `x"` prefixes).
-    static let toolTabs: [SpotlightKind] = [.clip, .lookup, .translation, .process]
-
-    /// Tabs that run their own search instead of filtering the current results, in the order
-    /// chosen in Settings (`tab_order`; OCR last by default).
-    static var modeTabs: [SpotlightKind] {
-        TabOrder.normalized(ThemeStore.shared.settings.tabOrder).compactMap(SpotlightKind.init(rawValue:))
-    }
-
-    /// `modeTabs` minus the ones hidden in Settings (`tab_hidden`): the pill row and the Tab cycle.
-    static var visibleModeTabs: [SpotlightKind] {
-        let settings = ThemeStore.shared.settings
-        return TabOrder.visible(order: settings.tabOrder, hidden: settings.hiddenTabs)
-            .compactMap(SpotlightKind.init(rawValue:))
     }
 
     /// SF Symbol of the idle bar's round button for this feature.
@@ -71,47 +48,25 @@ enum SpotlightKind: String, CaseIterable, Identifiable {
         case .app: "square.grid.2x2"
         case .folder: "folder"
         case .doc: "doc.text"
-        case .content: "text.viewfinder"
-        case .clip: "doc.on.clipboard"
-        case .lookup: "character.book.closed"
-        case .translation: "translate"
         case .process: "cpu"
         default: "circle"
         }
     }
 
-    /// Name of the round button / tab for this feature (Settings, tooltips).
-    var quickLabel: String {
-        switch self {
-        case .lookup, .translation: tabLabel
-        default: label
-        }
-    }
-
-    var tabLabel: String {
-        switch self {
-        case .lookup: "Dictionary"
-        case .translation: "Translate"
-        default: label
-        }
-    }
-
-    /// A file on disk matched by name (.doc) or by its text (.content).
-    var isDocument: Bool { self == .doc || self == .content }
+    var isDocument: Bool { self == .doc }
 }
 
 /// What can be done with an item when you open its actions (⌘K).
 enum SpotlightAction: String {
-    case open, reveal, copyPath, openInEditor, openInTerminal, moveToTrash, emptyTrash
+    case open, reveal, openInEditor, openInTerminal, moveToTrash, emptyTrash
     case hideApp, quitApp, excludeApp
     // Process rows (ps").
-    case measureCPU, killProcess, copyPID
+    case measureCPU, killProcess
 
     var label: String {
         switch self {
         case .open: "Open"
         case .reveal: "Show in \(FileManagerApp.name)"
-        case .copyPath: "Copy Path"
         case .openInEditor: "Open in Editor  ⌘E"
         case .openInTerminal: "Open in Terminal  ⌘T"
         case .moveToTrash: "Move to Trash  ⌘D"
@@ -121,7 +76,6 @@ enum SpotlightAction: String {
         case .excludeApp: "Hide from Results  ⌘⇧H"
         case .measureCPU: "Measure CPU"
         case .killProcess: "Force Quit"
-        case .copyPID: "Copy PID"
         }
     }
 
@@ -129,7 +83,6 @@ enum SpotlightAction: String {
         switch self {
         case .open: "arrow.up.forward.app"
         case .reveal: "folder"
-        case .copyPath: "doc.on.doc"
         case .openInEditor: "pencil"
         case .openInTerminal: "terminal"
         case .moveToTrash: "trash"
@@ -139,7 +92,6 @@ enum SpotlightAction: String {
         case .excludeApp: "nosign"
         case .measureCPU: "gauge.with.dots.needle.50percent"
         case .killProcess: "xmark.octagon"
-        case .copyPID: "number"
         }
     }
 }
@@ -153,8 +105,6 @@ struct SpotlightItem: Identifiable, Equatable {
     var glyph: String? = nil
     var meta: String? = nil
     var rank: Int = 0
-    /// Calculation result (only kind == .calc)
-    var calcResult: Double? = nil
     var score: Double = 0
     /// Target to open: an app/file/folder path, or a URL
     /// (`x-apple.systempreferences:…`, `https:…`).
@@ -169,18 +119,12 @@ struct SpotlightItem: Identifiable, Equatable {
     var action: SpotlightAction? = nil
     /// Process (ps" / :kill).
     var pid: Int32? = nil
-    /// Per-mode value: prefix to fill in, command id, copied text,
-    /// copied image hash, word to look up.
+    /// Value supplied by the row, such as a command ID or tag keyword.
     var payload: String? = nil
     /// Site whose real icon to draw ("youtube.com"); falls back to `iconPath`, then the tile.
     var favicon: String? = nil
     /// Open browser tab (kind == .tab).
     var tab: BrowserTab? = nil
-    /// Text clipboard row: id in ClipboardHistoryStore.
-    var clipID: UUID? = nil
-    /// Clipboard row pinned to the top of the history.
-    var isPinned = false
-
     /// A real file or folder on disk (not a URL scheme), the target of editor/terminal/trash.
     var isFileTarget: Bool {
         (kind.isDocument || kind == .folder) && target?.hasPrefix("/") == true
@@ -196,13 +140,13 @@ struct SpotlightItem: Identifiable, Equatable {
 }
 
 /// Fields of a `SpotlightItem` a row draws or acts on. `SpotlightItem.==` compares ids only (it
-/// identifies rows), which would hide a renamed or re-pinned row from the diff.
+/// identifies rows), which would hide a renamed row from the diff.
 extension SpotlightItem {
     func sameRowContent(as other: SpotlightItem) -> Bool {
         id == other.id && name == other.name && kind == other.kind && colors == other.colors
-            && glyph == other.glyph && meta == other.meta && calcResult == other.calcResult
+            && glyph == other.glyph && meta == other.meta
             && iconPath == other.iconPath && symbol == other.symbol && pid == other.pid
-            && payload == other.payload && clipID == other.clipID && isPinned == other.isPinned
+            && payload == other.payload
             && target == other.target && candidateID == other.candidateID
             && favicon == other.favicon && tab?.url == other.tab?.url
     }
@@ -239,73 +183,5 @@ private extension SpotlightItem {
     }
     static func setting(_ name: String, _ meta: String) -> Self {
         SpotlightItem(id: "setting|\(name)", name: name, kind: .setting, colors: "#9aa2ad,#5c636e", glyph: "⚙️", meta: meta)
-    }
-}
-
-// MARK: - Calculator (+ - * / % ^ ())
-
-nonisolated enum SpotlightCalc {
-    static func evaluate(_ src: String) -> Double? {
-        guard src.rangeOfCharacter(from: .decimalDigits) != nil else { return nil }
-        guard src.contains(where: { "+-*/^%".contains($0) }) else { return nil }
-        guard src.range(of: "^[0-9\\s.,()+\\-*/^%]+$", options: .regularExpression) != nil else { return nil }
-        var tokens: [String] = []
-        var buf = ""
-        func flush() { if !buf.isEmpty { tokens.append(buf); buf = "" } }
-        for ch in src.replacingOccurrences(of: ",", with: "") {
-            if ch.isNumber || ch == "." { buf.append(ch) }
-            else if "+-*/^%()".contains(ch) { flush(); tokens.append(String(ch)) }
-            else if ch.isWhitespace { flush() }
-            else { return nil }
-        }
-        flush()
-        guard !tokens.isEmpty else { return nil }
-        var p = 0
-        func peek() -> String? { p < tokens.count ? tokens[p] : nil }
-        func eat(_ x: String) -> Bool { if peek() == x { p += 1; return true }; return false }
-        func expr() -> Double? {
-            guard var v = term() else { return nil }
-            while peek() == "+" || peek() == "-" {
-                let op = tokens[p]; p += 1
-                guard let r = term() else { return nil }
-                v = op == "+" ? v + r : v - r
-            }
-            return v
-        }
-        func term() -> Double? {
-            guard var v = unary() else { return nil }
-            while peek() == "*" || peek() == "/" || peek() == "%" {
-                let op = tokens[p]; p += 1
-                guard let r = unary() else { return nil }
-                if op == "*" { v *= r } else if op == "/" { v /= r } else { v = v.truncatingRemainder(dividingBy: r) }
-            }
-            return v
-        }
-        func unary() -> Double? {
-            if eat("-") { guard let v = unary() else { return nil }; return -v }
-            if eat("+") { return unary() }
-            return power()
-        }
-        func power() -> Double? {
-            guard let base = primary() else { return nil }
-            if eat("^") { guard let e = unary() else { return nil }; return pow(base, e) }
-            return base
-        }
-        func primary() -> Double? {
-            if eat("(") { guard let v = expr(), eat(")") else { return nil }; return v }
-            guard let t = peek(), Double(t) != nil else { return nil }
-            p += 1
-            return Double(t)
-        }
-        guard let val = expr(), p == tokens.count, val.isFinite else { return nil }
-        return (val * 1e10).rounded() / 1e10
-    }
-
-    static func format(_ n: Double) -> String {
-        let f = NumberFormatter()
-        f.locale = Locale(identifier: "vi_VN")
-        f.maximumFractionDigits = 10
-        f.numberStyle = .decimal
-        return f.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 }

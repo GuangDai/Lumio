@@ -14,10 +14,9 @@
 | --- | --- |
 | `search_api.rs` | `lumio_search_json`, `lumio_search_json_compact` |
 | `usage_api.rs` | recording and reading usage events |
-| `clipboard_api.rs` | clipboard history |
 | `modes_api.rs` | launch modes |
 | `tools_api.rs` | preferred tools (editor, terminal) |
-| `translate_api.rs`, `answers_api.rs` | translation and URL helpers |
+| `answers_api.rs` | URL helpers |
 | `url_history_api.rs` | web search history |
 | `matching_api.rs` | text matching helpers |
 | `runtime_config.rs` | loading and reloading `~/.lumio/config` |

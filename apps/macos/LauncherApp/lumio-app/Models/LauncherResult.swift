@@ -4,7 +4,6 @@ enum LauncherResultKind: String, Codable {
     case app
     case file
     case folder
-    case clipboard
     case process
     /// A row from a user-declared block that has no filesystem target.
     case action

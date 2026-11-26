@@ -3,21 +3,16 @@ import SwiftUI
 
 // One result row of the launcher list, and the pieces only rows use.
 //
-// The row is a separate `Equatable` view with value inputs so SwiftUI can skip the body of every
-// row whose inputs did not change: moving the selection or the hover re-evaluates the launcher
-// view but only the two rows whose `selected` flipped. Closures are NOT part of the comparison, so
-// each one may only use what `==` compares (see `SpotlightRow.==`).
+// The row is a separate `Equatable` view so SwiftUI can skip rendering rows whose inputs
+// stayed the same when the selection moves.
 
 struct SpotlightRow: View, Equatable {
     private typealias Metric = SpotlightSpec.Metric
 
-    /// The row as displayed (a translation row already carries its translated text).
     let item: SpotlightItem
     let selected: Bool
     /// :kill — this process is armed, the next Enter kills it.
     let armed: Bool
-    /// Clipboard image rows: the thumbnail, loaded by the list (nil = not on disk yet).
-    let thumbnail: NSImage?
     /// App rows: the app is running (green dot; ⏎ switches to it).
     var running = false
     /// Typed words shown in bold in the title (Fluent Search-style); empty = plain title.
@@ -25,36 +20,14 @@ struct SpotlightRow: View, Equatable {
     let palette: SpotlightPalette
     let reduceMotion: Bool
     let namespace: Namespace.ID
-    /// Clipboard rows: pin / delete this clip. Built by the list from the same `item`.
-    let onTogglePin: () -> Void
-    let onDelete: () -> Void
 
-    /// Everything that changes what the row shows, except the closures: those only use
-    /// `item.kind`, `clipID`, `payload` and `isPinned`, all compared here, so a skipped row
-    /// never keeps a closure that would act on a different clip.
     static func == (lhs: SpotlightRow, rhs: SpotlightRow) -> Bool {
         lhs.item.sameRowContent(as: rhs.item)
             && lhs.selected == rhs.selected && lhs.armed == rhs.armed
-            && lhs.thumbnail === rhs.thumbnail
             && lhs.running == rhs.running && lhs.highlight == rhs.highlight
             && lhs.palette.isDark == rhs.palette.isDark
             && lhs.reduceMotion == rhs.reduceMotion
             && lhs.namespace == rhs.namespace
-    }
-
-    static let clipRowHeight: CGFloat = 30
-    static let clipImageRowHeight: CGFloat = 64
-    /// tw": the list is a narrow column of words, like the Dictionary.app sidebar.
-    static let wordRowHeight: CGFloat = 32
-
-    var body: some View {
-        if item.kind == .lookup {
-            wordRow
-        } else if item.kind == .clip || item.kind == .clipImage {
-            clipRow
-        } else {
-            standardRow
-        }
     }
 
     private var selection: SpotlightSelection {
@@ -66,84 +39,7 @@ struct SpotlightRow: View, Equatable {
         )
     }
 
-    /// tw": just the word, like the Dictionary.app sidebar.
-    private var wordRow: some View {
-        Text(item.name)
-            .font(.system(size: 14.5, weight: selected ? .semibold : .regular))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .frame(height: Self.wordRowHeight)
-            .modifier(selection)
-            .contentShape(Rectangle())
-    }
-
-    /// Clipboard: just the copied text on one line, or a thumbnail of the image. The full text
-    /// and details open in the side preview (see `scheduleClipPreview`).
-    private var clipRow: some View {
-        let isImage = item.kind == .clipImage
-        return Group {
-            if isImage, let image = thumbnail {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                    .frame(maxHeight: Self.clipImageRowHeight - 12)
-            } else {
-                Text(item.name)
-                    .font(.system(size: 14))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .padding(.trailing, selected ? (item.isPinned ? 46 : 46) : (item.isPinned ? 24 : 0))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .overlay(alignment: .trailing) {
-            clipRowButtons.padding(.trailing, 6)
-        }
-        .frame(height: isImage ? Self.clipImageRowHeight : Self.clipRowHeight)
-        .modifier(selection)
-        .contentShape(Rectangle())
-    }
-
-    /// Pin and delete, on the selected clip. A pinned clip always shows its pin.
-    @ViewBuilder
-    private var clipRowButtons: some View {
-        if selected || item.isPinned {
-            HStack(spacing: 4) {
-                clipIconButton(
-                    item.isPinned ? "pin.fill" : "pin",
-                    help: item.isPinned ? "Unpin (⌘P)" : "Pin (⌘P)",
-                    active: item.isPinned,
-                    action: onTogglePin
-                )
-                if selected {
-                    clipIconButton("trash", help: "Delete (⌘D)", action: onDelete)
-                }
-            }
-            .padding(.leading, 6)
-        }
-    }
-
-    private func clipIconButton(
-        _ symbol: String, help: String, active: Bool = false, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                .frame(width: 18, height: 18)
-                .background(palette.kbd, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    private var standardRow: some View {
+    var body: some View {
         HStack(spacing: 11) {
             SpotlightRowIcon(item: item, size: 30, isSelected: selected)
             // Narrow left column (right half is the preview): name on top, path / description below.
@@ -172,17 +68,7 @@ struct SpotlightRow: View, Equatable {
             // Change IMMEDIATELY on selection: cross-fading them in step with the slide would make the
             // text of both states overlap.
             Group {
-                if item.kind == .calc, let converted = item.payload {
-                    Text("= \(converted)")
-                        .font(.system(size: 15, weight: .medium).monospacedDigit())
-                        .fixedSize()
-                } else if item.kind == .calc, let calcResult = item.calcResult {
-                    Text("= \(SpotlightCalc.format(calcResult))")
-                        .font(.system(size: 15, weight: .medium).monospacedDigit())
-                        .fixedSize()
-                } else if selected {
-                    keyCap("⏎")
-                } else if armed {
+                if selected || armed {
                     keyCap("⏎")
                 }
             }

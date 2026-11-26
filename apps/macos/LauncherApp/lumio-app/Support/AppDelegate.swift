@@ -44,7 +44,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // .lookToggleWindowRequested observer is live and Option+Space toggles it.
         makeLauncherWindow()
 
-        // OCR is not started here: its worker process runs only when the OCR tab is opened.
         MemoryTrim.watchMemoryPressure()
 
         // Settings open in a separate window.
@@ -76,11 +75,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated { self?.hotKeyManager.setPaused(recording) }
             },
         ]
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        // The worker would also exit on its own (its stdin closes with us); this is just sooner.
-        ContentIndex.shared.stopWorker()
     }
 
     /// Build the launcher window in AppKit, host ContentView in it, and leave it hidden.

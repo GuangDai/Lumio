@@ -52,9 +52,6 @@ final class PinStore: ObservableObject {
         case .app, .folder, .doc, .url, .setting:
             guard let target = item.target, !target.isEmpty else { return nil }
             return (item.kind, target)
-        case .content:
-            guard let target = item.target else { return nil }
-            return (.doc, target)
         case .tab:
             guard let url = item.tab?.url ?? item.target else { return nil }
             return (.url, url)

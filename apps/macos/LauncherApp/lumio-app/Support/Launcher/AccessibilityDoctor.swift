@@ -82,8 +82,7 @@ final class AccessibilityDoctor {
         case .working:
             alert.alertStyle = .informational
             alert.messageText = afterFix ? "Accessibility is working again" : "Accessibility is working"
-            alert.informativeText = "Lumio can read window titles and the text you have selected. "
-                + "The permission is on and macOS is honouring it, so nothing is stale."
+            alert.informativeText = "Lumio can read window titles."
             button("OK")
 
         case .off(let listed):
@@ -93,7 +92,7 @@ final class AccessibilityDoctor {
                 ? "Lumio is in the list under System Settings ▸ Privacy & Security ▸ Accessibility, but its switch is off. "
                 : "Lumio is not allowed under System Settings ▸ Privacy & Security ▸ Accessibility. ")
                 + "This is not a stale permission: it is simply off.\n\n"
-                + "Window search and looking up the selected text stay unavailable until you turn the switch on. "
+                + "Turn on Accessibility for Lumio to search open windows. "
                 + "Everything else works without it."
             button("Open Accessibility Settings") { [self] in
                 // Puts Lumio in the list (switch off) so there is something to turn on.

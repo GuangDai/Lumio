@@ -140,6 +140,7 @@
 /* Begin PBXShellScriptBuildPhase section */
 		A1B2C3D42F80D9AE001BAA87 /* Build Rust FFI */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -155,7 +156,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n  PROFILE=release\n  CARGO_FLAGS=--release\nelse\n  PROFILE=debug\n  CARGO_FLAGS=\"\"\nfi\n\nif [ -x \"$HOME/.cargo/bin/cargo\" ]; then\n  CARGO_BIN=\"$HOME/.cargo/bin/cargo\"\nelse\n  CARGO_BIN=cargo\nfi\n\nexport MACOSX_DEPLOYMENT_TARGET=\"${MACOSX_DEPLOYMENT_TARGET:-15.0}\"\n\nmkdir -p \"$PROJECT_DIR/RustBuild\"\nif \"$CARGO_BIN\" +nightly build --manifest-path \"$PROJECT_DIR/../../../bridge/ffi/Cargo.toml\" $CARGO_FLAGS; then\n  cp \"$PROJECT_DIR/../../../bridge/ffi/target/$PROFILE/liblumio_ffi.a\" \"$PROJECT_DIR/RustBuild/liblumio_ffi.a\"\nelse\n  echo \"warning: Rust build skipped; using existing RustBuild/liblumio_ffi.a\"\n  if [ ! -f \"$PROJECT_DIR/RustBuild/liblumio_ffi.a\" ]; then\n    echo \"error: missing fallback RustBuild/liblumio_ffi.a\"\n    exit 1\n  fi\nfi\n";
+			shellScript = "set -eu\nif [ \"$CONFIGURATION\" = Release ]; then\n  PROFILE=release\n  set -- --release\nelse\n  PROFILE=debug\n  set --\nfi\n\nif [ -x \"$HOME/.cargo/bin/cargo\" ]; then\n  CARGO_BIN=\"$HOME/.cargo/bin/cargo\"\nelse\n  CARGO_BIN=cargo\nfi\n\nexport MACOSX_DEPLOYMENT_TARGET=\"${MACOSX_DEPLOYMENT_TARGET:-15.0}\"\nFFI_DIR=\"$PROJECT_DIR/../../../bridge/ffi\"\n\n\"$CARGO_BIN\" +nightly build --locked --manifest-path \"$FFI_DIR/Cargo.toml\" --target-dir \"$FFI_DIR/target\" \"$@\"\nmkdir -p \"$PROJECT_DIR/RustBuild\"\nSOURCE_LIB=\"$FFI_DIR/target/$PROFILE/liblumio_ffi.a\"\nOUTPUT_LIB=\"$PROJECT_DIR/RustBuild/liblumio_ffi.a\"\nif ! cmp -s \"$SOURCE_LIB\" \"$OUTPUT_LIB\"; then\n  cp \"$SOURCE_LIB\" \"$OUTPUT_LIB\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

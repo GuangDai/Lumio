@@ -3,7 +3,7 @@
 //  lumio-app
 //
 //  The side preview's expand button opens the system Quick Look panel, the same one
-//  Finder shows on Space: documents, images, PDFs, text clips (written to a temp .txt).
+//  Finder shows on Space for documents, images, and PDFs.
 //  The launcher window is the panel's controller (see LauncherPanelWindow).
 //
 
@@ -21,33 +21,20 @@ final class SpotlightQuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPan
     nonisolated(unsafe) fileprivate weak var sourceView: NSView?
     nonisolated(unsafe) private var transitionImage: NSImage?
 
-    /// Loads a text clip's full text by its row id in the launcher's history. Set by the
-    /// launcher: clip rows hold a title, and the text lives in the database.
-    static var clipText: ((UUID) async -> String?)?
-
-    /// Bumped by every request, so a slow clip load cannot land after a newer selection.
-    private static var request = 0
-
     /// Opens Quick Look on `item`, or swaps what it shows if it is already open.
     static func show(item: SpotlightItem) {
-        request += 1
-        let current = request
-        Task { @MainActor in
-            guard let url = await previewURL(for: item), current == request else {
-                if current == request { NSSound.beep() }
-                return
-            }
-            shared.url = url
-            shared.transitionImage = transitionImage(for: item, url: url)
-            guard let panel = QLPreviewPanel.shared() else { return }
-            if panel.isVisible {
-                panel.reloadData()
-            } else {
-                panel.makeKeyAndOrderFront(nil)
-            }
-            // The launcher sits at .floating: keep Quick Look above it.
-            panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        guard updateItem(item) else {
+            NSSound.beep()
+            return
         }
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if panel.isVisible {
+            panel.reloadData()
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+        }
+        // The launcher sits at .floating: keep Quick Look above it.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
     }
 
     /// Settings ▸ Shortcuts ▸ Quick Look (⌘Y by default); nil = turned off.
@@ -62,8 +49,6 @@ final class SpotlightQuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPan
     }
 
     static func close() {
-        // A clip still loading must not reopen the panel that was just closed.
-        request += 1
         guard isVisible else { return }
         QLPreviewPanel.shared()?.orderOut(nil)
     }
@@ -75,57 +60,16 @@ final class SpotlightQuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPan
 
     /// While open, follows the launcher's selection (↑ / ↓ inside the panel).
     static func follow(item: SpotlightItem) {
-        guard isVisible else { return }
-        request += 1
-        let current = request
-        Task { @MainActor in
-            guard let url = await previewURL(for: item), current == request, isVisible else { return }
-            shared.url = url
-            shared.transitionImage = transitionImage(for: item, url: url)
-            QLPreviewPanel.shared()?.reloadData()
-        }
+        guard isVisible, updateItem(item) else { return }
+        QLPreviewPanel.shared()?.reloadData()
     }
 
-    /// A file Quick Look can open: the document itself, the stored image, or the text in a temp file.
-    private static func previewURL(for item: SpotlightItem) async -> URL? {
-        switch item.kind {
-        case .doc, .content, .clipImage:
-            guard let path = item.target, path.hasPrefix("/"),
-                  FileManager.default.fileExists(atPath: path) else { return nil }
-            return URL(fileURLWithPath: path)
-        case .clip:
-            guard let id = item.clipID, let text = await clipText?(id) else { return nil }
-            return writeTextClip(text)
-        default:
-            return nil
-        }
-    }
-
-    /// The thumbnail for images, the file icon for documents, nothing for text (plain zoom).
-    private static func transitionImage(for item: SpotlightItem, url: URL) -> NSImage? {
-        switch item.kind {
-        case .clipImage:
-            return item.iconPath.flatMap { RowIconCache.thumbnail(forFile: $0) }
-        case .doc, .content:
-            return NSWorkspace.shared.icon(forFile: url.path)
-        default:
-            return nil
-        }
-    }
-
-    /// A fresh folder each time: Quick Look caches by URL, so reusing one path shows stale text.
-    private static func writeTextClip(_ text: String) -> URL? {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("LumioQuickLook", isDirectory: true)
-        try? FileManager.default.removeItem(at: root)
-        let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let file = folder.appendingPathComponent("Clipboard.txt")
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try text.write(to: file, atomically: true, encoding: .utf8)
-            return file
-        } catch {
-            return nil
-        }
+    private static func updateItem(_ item: SpotlightItem) -> Bool {
+        guard item.kind.isDocument, let path = item.target, path.hasPrefix("/"),
+              FileManager.default.fileExists(atPath: path) else { return false }
+        shared.url = URL(fileURLWithPath: path)
+        shared.transitionImage = NSWorkspace.shared.icon(forFile: path)
+        return true
     }
 
     // MARK: - QLPreviewPanelDataSource

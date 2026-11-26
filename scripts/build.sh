@@ -29,9 +29,6 @@ if [ $# -ge 1 ]; then
 fi
 
 echo "==> [1/3] Building $APP_NAME ${VERSION:+$VERSION }(Release, arm64)"
-# Debug and Release share RustBuild/liblumio_ffi.a and Xcode skips the Rust
-# phase when it exists: drop it unless it was built for Release from this source.
-make --no-print-directory ffi-unstale XCODE_CONFIG=Release
 # ARCHS=arm64: the Rust phase only builds the host architecture.
 # Ad-hoc signing: there is no Developer ID certificate (local or CI).
 xcodebuild -quiet \
@@ -40,6 +37,7 @@ xcodebuild -quiet \
     -configuration Release \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$DERIVED_DATA" \
+    -onlyUsePackageVersionsFromResolvedFile \
     ARCHS=arm64 \
     CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
     ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"} \

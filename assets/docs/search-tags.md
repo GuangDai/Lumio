@@ -12,7 +12,7 @@ Results are ordered the way Fluent Search does it: **how well the name matches c
 
 **Drag results out.** Drag a file, folder or app row into another app (Photoshop, a chat, Finder); a link row drags as a URL.
 
-**Quick actions in the preview.** Apps and links list their actions (Open / Switch, Open New Instance, Show in file manager, Hide, Quit, Force Quit, Copy Path); files and folders get a strip (Open, Show, Search in Folder, Open in Editor, Copy Path). ⌘K still opens the full actions mode.
+**Quick actions in the preview.** Apps and links list their actions (Open / Switch, Open New Instance, Show in file manager, Hide, Quit, Force Quit); files and folders get a strip (Open, Show, Search in Folder, Open in Editor). ⌘K still opens the full actions mode.
 
 **Real site icons.** Web rows show the site's own icon, read from the browsers' local icon store; a page with no known icon shows its browser's app icon. Only search-tag sites (youtube.com, google.com…) fetch a missing icon once from Google's icon service.
 
@@ -21,15 +21,6 @@ Results are ordered the way Fluent Search does it: **how well the name matches c
 **External drives.** Plugged-in SSDs, USB sticks and SD cards are searched along with the home folder, with nothing to set up (each drive's own Spotlight index answers, so there is no file limit). Every drive is also a tag: `t7` ⇥ searches the drive named T7, `drives` ⇥ all of them. Settings ▸ General ▸ **Search external drives**, or `search_external_drives=false`.
 
 **How much the instant index holds.** Lumio's own index (fuzzy, instant) is set by `file_scan_depth` (1–12) and `file_scan_limit` (500–50000) in the config; the defaults (4 deep, 8000 files) cut off large folders. For "find anything", use `file_scan_depth=12` and `file_scan_limit=50000`: code folders such as `node_modules` are skipped, so real files usually fit.
-
-## Conversions
-
-```text
-5 km to miles      72 f in c       1.5 gb in mb      90 min to hours     2 cups to ml
-100 usd to gbp     $250 in eur     20€ to gbp        100 usd   (→ your own currency)
-```
-
-⏎ copies the result. Units are Foundation's (length, weight, temperature, volume, speed, area, data, time). Currency uses the European Central Bank's public daily rates (about 30 major currencies), fetched at most twice a day and kept on disk; the request carries nothing about you or what you typed.
 
 ## Sorting, windows, system commands and more (Fluent Search parity, batch 2)
 
@@ -50,9 +41,9 @@ Results are ordered the way Fluent Search does it: **how well the name matches c
 - **Home.** The empty field lists your **pinned** results first, then the apps and files you use most. ↑↓ select, ⏎ opens.
 - **Pin** anything with ⌘⇧P or "Pin to Home" in its actions (apps, files, folders, links). Stored in `~/Library/Application Support/lumio/pins.json`.
 - **Detail card.** The right pane shows the result's icon (the picture itself for images and PSDs), Location, Modified, Size, **tag chips** (file, `.psd`, the parent folder, the app that opens it: click one to narrow the search to it) and **every action with its shortcut**. ⌥P or the eye button switches to the preview; the choice is remembered separately for files and folders (folders start on their newest-files list).
-- **File actions:** Open ⏎, Show in file manager ⌘F, Search in Parent Folder ⌘R, Open in Terminal ⌘T, Open With…, Open in Editor ⌘E, Copy Path ⌘⇧C, Copy File, Rename…, Pin ⌘⇧P, Move to Trash ⌘D, Delete Permanently.
+- **File actions:** Open ⏎, Show in file manager ⌘F, Search in Parent Folder ⌘R, Open in Terminal ⌘T, Open With…, Open in Editor ⌘E, Rename…, Pin ⌘⇧P, Move to Trash ⌘D, Delete Permanently.
 - **Tab on a selected file** narrows to its type ("press TAB to search for psd files"), as in Fluent; ⌘R searches its folder.
-- **`content` ⇥** finds documents by the words inside them (Spotlight's text index). `ocr` ⇥ is the tab for text inside images and scanned PDFs.
+- **`content` ⇥** finds documents by the words inside them (Spotlight's text index).
 - Typed words are bold in result titles; history rows show their address.
 - Settings ▸ Search ▸ **Learned results ▸ Reset** forgets what Lumio learned from your picks.
 
@@ -76,7 +67,7 @@ image ⇥                    → your most recent images
 | Folders | `desktop` `documents` `downloads` `pictures` `music` `movies` / `videos` `icloud` `home` |
 | Kinds | `image` / `img` `video` `audio` `document` `archive` `folder` `recent` |
 | Browser | `browser` (bookmarks + history) `bookmark` / `bm` `history`, every bookmark folder, every saved search engine |
-| Fluent Search names | `files` (files and folders) `file` (no folders) `folder` / `directory` `apps` `settings` `content` (text in images & PDFs) `clipboard` `process` `dictionary` `translate` `bing` `ddg` |
+| Fluent Search names | `files` (files and folders) `file` (no folders) `folder` / `directory` `apps` `settings` `content` (Spotlight document text) `process` `bing` `ddg` |
 | Extensions | `pdf` `psd` `ai` `png` `jpg` `jpeg` `heic` `svg` `gif` `webp` `mp4` `mov` `mp3` `wav` `docx` `xlsx` `pptx` `txt` `md` `zip` `dmg` `fig` `sketch` `prproj` `aep`, or any `.ext` |
 
 Your own:
@@ -127,7 +118,7 @@ Web tags:
 | `drive` | Google Drive | `gpt` | ChatGPT |
 | `docs` | Google Docs | `claude` | Claude |
 | `gmail` | Gmail | `gimg` | Google Images |
-| `maps` | Google Maps | `tr` | Google Translate |
+| `maps` | Google Maps | | |
 | `gh` | GitHub | `spotify` | Spotify |
 | `r` | Reddit | `figma` | Figma |
 | `x` | X | `notion` | Notion |

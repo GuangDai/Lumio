@@ -44,10 +44,6 @@ private func lumio_reload_config() -> Bool
 nonisolated
 private func lumio_request_index_refresh() -> Bool
 
-@_silgen_name("lumio_translate_json")
-nonisolated
-private func lumio_translate_json(_ text: UnsafePointer<CChar>?, _ targetLang: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
-
 @_silgen_name("lumio_fuzzy_score")
 nonisolated
 private func lumio_fuzzy_score(_ query: UnsafePointer<CChar>?, _ title: UnsafePointer<CChar>?) -> Int64
@@ -63,42 +59,6 @@ private func lumio_record_url_hit(_ url: UnsafePointer<CChar>?) -> Bool
 @_silgen_name("lumio_recent_urls_json")
 nonisolated
 private func lumio_recent_urls_json(_ query: UnsafePointer<CChar>?, _ limit: UInt32) -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("lumio_clipboard_record")
-nonisolated
-private func lumio_clipboard_record(_ content: UnsafePointer<CChar>?, _ appBundleID: UnsafePointer<CChar>?) -> Int64
-
-@_silgen_name("lumio_clipboard_record_image")
-nonisolated
-private func lumio_clipboard_record_image(_ label: UnsafePointer<CChar>?, _ imageHash: UnsafePointer<CChar>?, _ appBundleID: UnsafePointer<CChar>?) -> Int64
-
-@_silgen_name("lumio_clipboard_images_dir")
-nonisolated
-private func lumio_clipboard_images_dir() -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("lumio_clipboard_list_json")
-nonisolated
-private func lumio_clipboard_list_json(_ kind: UnsafePointer<CChar>?, _ query: UnsafePointer<CChar>?, _ limit: UInt32, _ previewChars: UInt32) -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("lumio_clipboard_content")
-nonisolated
-private func lumio_clipboard_content(_ id: Int64, _ maxChars: UInt32) -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("lumio_clipboard_trim")
-nonisolated
-private func lumio_clipboard_trim(_ textKeep: UInt32, _ imageKeep: UInt32) -> UInt32
-
-@_silgen_name("lumio_clipboard_set_pinned")
-nonisolated
-private func lumio_clipboard_set_pinned(_ id: Int64, _ pinned: Bool) -> Bool
-
-@_silgen_name("lumio_clipboard_delete")
-nonisolated
-private func lumio_clipboard_delete(_ id: Int64) -> Bool
-
-@_silgen_name("lumio_clipboard_clear")
-nonisolated
-private func lumio_clipboard_clear() -> UInt32
 
 @_silgen_name("lumio_perform_tool_action_json")
 nonisolated
@@ -192,29 +152,6 @@ final class EngineBridge: @unchecked Sendable {
         lumio_request_index_refresh()
     }
 
-    nonisolated func translate(text: String, targetLang: String = "en") -> TranslationResult? {
-        let result = text.withCString { textCstr in
-            targetLang.withCString { langCstr in
-                lumio_translate_json(textCstr, langCstr)
-            }
-        }
-
-        guard let result else {
-            return nil
-        }
-
-        defer {
-            lumio_free_cstring(result)
-        }
-
-        let raw = String(cString: result)
-        guard let data = raw.data(using: .utf8) else {
-            return nil
-        }
-
-        return try? JSONDecoder().decode(TranslationResult.self, from: data)
-    }
-
     nonisolated func fuzzyScore(query: String, title: String) -> Int? {
         let score = query.withCString { queryCstr in
             title.withCString { titleCstr in
@@ -275,158 +212,9 @@ final class EngineBridge: @unchecked Sendable {
         return (try? decoder.decode([URLHistoryEntry].self, from: data)) ?? []
     }
 
-    /// One remembered clip, as stored in the shared lumio.db.
-    nonisolated struct ClipboardEntry: Decodable, Identifiable, Equatable {
-        let id: Int64
-        /// The whole clip, or only its leading characters when the list was asked for
-        /// previews (`contentLength` is the real size either way).
-        let content: String
-        /// Characters in the full clip. Optional: an older core doesn't send it.
-        let contentLength: Int?
-        /// Lines in the full clip. Optional like `contentLength`.
-        let lineCount: Int?
-        /// Identity of what was copied. For an image clip it is also the stem
-        /// of the file holding the pixels.
-        let contentHash: String
-        let appBundleID: String?
-        let copiedAtUnixS: Int64
-        /// Optional: an older core sends neither.
-        let firstCopiedAtUnixS: Int64?
-        let copyCount: Int?
-        /// Optional: an older core doesn't send it.
-        let pinned: Bool?
-
-        var copiedAt: Date { Date(timeIntervalSince1970: TimeInterval(copiedAtUnixS)) }
-        var firstCopiedAt: Date {
-            Date(timeIntervalSince1970: TimeInterval(firstCopiedAtUnixS ?? copiedAtUnixS))
-        }
-    }
-
-    /// Remembers a clip and returns its row id, or nil when nothing was
-    /// stored. The id is the handle a later delete needs: without it, deleting
-    /// the clip would only drop the in-memory copy and it would return on the
-    /// next launch.
-    ///
-    /// NEVER call this for a concealed or transient clip: the core cannot see
-    /// pasteboard type markers, so this side is the only place a password
-    /// manager's clip can be kept out of the database.
-    /// Opens the shared lumio.db - call off the main thread.
-    @discardableResult
-    nonisolated func recordClipboard(content: String, appBundleID: String? = nil) -> Int64? {
-        let id = content.withCString { contentC in
-            if let appBundleID {
-                return appBundleID.withCString { appC in
-                    lumio_clipboard_record(contentC, appC)
-                }
-            }
-            return lumio_clipboard_record(contentC, nil)
-        }
-        return id > 0 ? id : nil
-    }
-
-    /// Remembers a copied image and returns its row id. `imageHash` names the
-    /// file this side already wrote into `clipboardImagesDirectory()`; the row
-    /// is what keeps that file from being swept.
-    ///
-    /// Same concealed-clip rule as `recordClipboard`: only this side sees the
-    /// pasteboard markers.
-    @discardableResult
-    nonisolated func recordClipboardImage(
-        label: String, imageHash: String, appBundleID: String? = nil
-    ) -> Int64? {
-        let id = label.withCString { labelC in
-            imageHash.withCString { hashC in
-                if let appBundleID {
-                    return appBundleID.withCString { appC in
-                        lumio_clipboard_record_image(labelC, hashC, appC)
-                    }
-                }
-                return lumio_clipboard_record_image(labelC, hashC, nil)
-            }
-        }
-        return id > 0 ? id : nil
-    }
-
-    /// Where image clips keep their bytes. Core owns the location and sweeps
-    /// anything in it that no row claims, so this side asks rather than
-    /// assembling the path itself.
-    nonisolated func clipboardImagesDirectory() -> URL? {
-        guard let ptr = lumio_clipboard_images_dir() else { return nil }
-        defer { lumio_free_cstring(ptr) }
-        let path = String(cString: ptr)
-        return path.isEmpty ? nil : URL(fileURLWithPath: path)
-    }
-
-    /// Up to `limit` remembered clips of `kind` matching `query` (pinned first, then
-    /// newest). An empty query returns the most recent. The match runs in the core
-    /// over each clip's whole text, case-insensitively. With `previewCharacters` > 0
-    /// each row's `content` is only that many leading characters: the list stays
-    /// small and the full text is fetched with `clipboardContent(id:)` when needed.
-    /// Opens lumio.db - call off the main thread.
-    nonisolated func clipboardEntries(
-        kind: String = AppConstants.Launcher.Clipboard.textKind,
-        query: String = "",
-        limit: Int,
-        previewCharacters: Int = 0
-    ) -> [ClipboardEntry] {
-        let ptr = kind.withCString { kindC in
-            query.withCString { queryC in
-                lumio_clipboard_list_json(
-                    kindC, queryC, UInt32(clamping: limit), UInt32(clamping: previewCharacters))
-            }
-        }
-        guard let ptr else { return [] }
-        defer { lumio_free_cstring(ptr) }
-        guard let data = String(cString: ptr).data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([ClipboardEntry].self, from: data)) ?? []
-    }
-
-    /// One clip's stored text, cut to `maxCharacters` leading characters unless that is
-    /// 0. Nil when the row is gone (deleted, trimmed, or replaced by a re-copy, which
-    /// hands out a new id). Opens lumio.db - call off the main thread.
-    nonisolated func clipboardContent(id: Int64, maxCharacters: Int = 0) -> String? {
-        guard let ptr = lumio_clipboard_content(id, UInt32(clamping: maxCharacters)) else {
-            return nil
-        }
-        defer { lumio_free_cstring(ptr) }
-        return String(cString: ptr)
-    }
-
-    /// Applies the history limits to the database: keeps the newest `textKeep` text
-    /// clips and `imageKeep` image clips (pinned ones never count and never go).
-    /// Returns how many rows were deleted. Off the main thread.
-    @discardableResult
-    nonisolated func trimClipboardHistory(textKeep: Int, imageKeep: Int) -> Int {
-        Int(lumio_clipboard_trim(UInt32(clamping: textKeep), UInt32(clamping: imageKeep)))
-    }
-
-    /// Pinned clips list first and are never pruned.
-    @discardableResult
-    nonisolated func setClipboardPinned(id: Int64, pinned: Bool) -> Bool {
-        lumio_clipboard_set_pinned(id, pinned)
-    }
-
-    @discardableResult
-    nonisolated func deleteClipboardEntry(id: Int64) -> Bool {
-        lumio_clipboard_delete(id)
-    }
-
-    /// Forgets every clip, returning how many were removed.
-    @discardableResult
-    nonisolated func clearClipboardHistory() -> Int {
-        Int(lumio_clipboard_clear())
-    }
-
     nonisolated private func fallbackResults() -> [LauncherResult] {
         []
     }
-}
-
-
-nonisolated struct TranslationResult: Decodable {
-    let original: String
-    let translated: String
-    let error: BridgeError?
 }
 
 /// Wire shape of `lumio_answers::UrlMatch`: the resolved openable URL and how

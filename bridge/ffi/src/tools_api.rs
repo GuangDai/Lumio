@@ -55,6 +55,9 @@ fn performed(tool: &str, command: String) -> Resolved {
     if ok {
         Resolved::performed(Some(tool.to_string()))
     } else {
-        Resolved::failed(Some(tool.to_string()), "failed to spawn command".to_string())
+        Resolved::failed(
+            Some(tool.to_string()),
+            "failed to spawn command".to_string(),
+        )
     }
 }

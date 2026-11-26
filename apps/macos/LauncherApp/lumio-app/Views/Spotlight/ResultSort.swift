@@ -47,7 +47,7 @@ enum ResultSort: String, CaseIterable {
         case .relevance:
             return items
         case .name:
-            let nameable: Set<SpotlightKind> = [.app, .doc, .content, .folder, .url, .tab, .window, .setting]
+            let nameable: Set<SpotlightKind> = [.app, .doc, .folder, .url, .tab, .window, .setting]
             let named = items.filter { nameable.contains($0.kind) }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             return named + items.filter { !nameable.contains($0.kind) }

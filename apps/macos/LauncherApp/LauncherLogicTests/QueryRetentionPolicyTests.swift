@@ -11,7 +11,7 @@ final class QueryRetentionPolicyTests: XCTestCase {
     func testAMissingKeyFallsBackToClearing() {
         XCTAssertEqual(QueryRetentionPolicy.resolveSeconds(from: [:]), fallback)
         XCTAssertEqual(
-            QueryRetentionPolicy.resolveSeconds(from: ["clipboard_history_limit": "10"]),
+            QueryRetentionPolicy.resolveSeconds(from: ["unrelated_setting": "10"]),
             fallback)
         XCTAssertNotEqual(fallback, never)
         XCTAssertGreaterThan(fallback, 0)

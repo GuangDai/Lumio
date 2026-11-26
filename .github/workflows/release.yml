@@ -1,7 +1,5 @@
 name: Release
-# Started by ./scripts/release.sh vX.Y.Z (tag push). Builds Lumio.dmg, publishes
-# the GitHub Release, then notify-users publishes the Sparkle appcast and the
-# Homebrew cask.
+# Tag pushes build Lumio.dmg and publish it to the GitHub Release.
 on:
   push:
     tags: ["v*"]
@@ -48,6 +46,7 @@ jobs:
   #   HOMEBREW_TAP_DEPLOY_KEY        private half of a write deploy key on cavaldos/homebrew-tap
   # Manual fallback: ./scripts/notify-update.sh vX.Y.Z
   notify-users:
+    if: github.repository == 'cavaldos/Lumio'
     needs: release
     runs-on: macos-26
     steps:

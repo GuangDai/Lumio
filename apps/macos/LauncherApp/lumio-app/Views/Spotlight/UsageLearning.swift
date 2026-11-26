@@ -91,9 +91,6 @@ final class UsageLearning {
         case .app, .folder, .doc, .url:
             guard let target = item.target, !target.isEmpty else { return nil }
             return (item.kind, target)
-        case .content:
-            guard let target = item.target else { return nil }
-            return (.doc, target)
         case .tab:
             // A tab's window/index is gone tomorrow; its address is not.
             guard let url = item.tab?.url ?? item.target else { return nil }

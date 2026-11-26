@@ -30,10 +30,6 @@ pub enum LaunchResultAction {
     WebSearch {
         query: String,
     },
-    Translate {
-        text: String,
-        target_lang: String,
-    },
     /// A user-declared block, identified by its candidate id. There is nothing
     /// to open: the shell looks the block up and performs its steps.
     PerformBlock {

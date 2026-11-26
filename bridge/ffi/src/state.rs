@@ -310,7 +310,11 @@ fn request_background_index_refresh_internal() -> bool {
     let dirty_version_snapshot = INDEX_CHANGE_VERSION.load(Ordering::Acquire);
     // Lazy indexing off refreshes on every open with nothing recorded: walk it all.
     let taken = PENDING_SCOPE.swap(0, Ordering::AcqRel);
-    let bits = if lazy_indexing_enabled && taken != 0 { taken } else { SCOPE_ALL };
+    let bits = if lazy_indexing_enabled && taken != 0 {
+        taken
+    } else {
+        SCOPE_ALL
+    };
     thread::spawn(move || {
         // Keep refresh slot release tied to scope exit so the in-progress flag
         // is reset for success, error, and panic-unwind paths.
@@ -381,8 +385,7 @@ impl Drop for IndexRefreshGuard {
 }
 
 /// Wraps an optional pre-serialized JSON string into an owned C string, falling
-/// back to the JSON literal `null`. Shared by every FFI wrapper whose result is
-/// "an object on a hit, or nothing" (answers, calc's inline row, ...).
+/// back to the JSON literal `null` when a lookup has no result.
 pub(crate) fn json_cstring_or_null(json: Option<String>) -> *mut c_char {
     const JSON_NULL: &str = "null";
     let json = json.unwrap_or_else(|| JSON_NULL.to_string());
@@ -692,23 +695,39 @@ mod tests {
         let filter = watch_filter();
         // Build output, dependencies, dot-dirs: the file walker never enters them.
         assert_eq!(bits(&filter, "/Users/me/Code/lumio/target/debug/foo.o"), 0);
-        assert_eq!(bits(&filter, "/Users/me/Code/web/node_modules/x/index.js"), 0);
+        assert_eq!(
+            bits(&filter, "/Users/me/Code/web/node_modules/x/index.js"),
+            0
+        );
         assert_eq!(bits(&filter, "/Users/me/Code/lumio/.git/index"), 0);
-        assert_eq!(bits(&filter, "/Users/me/Code/Target/x"), 0, "skip names ignore case");
+        assert_eq!(
+            bits(&filter, "/Users/me/Code/Target/x"),
+            0,
+            "skip names ignore case"
+        );
         // Deeper than file_scan_depth.
         assert_eq!(bits(&filter, "/Users/me/Code/a/b/c/d/e.txt"), 0);
         // Outside every root.
         assert_eq!(bits(&filter, "/tmp/x"), 0);
         // An app updating files inside its own bundle.
-        assert_eq!(bits(&filter, "/Applications/Safari.app/Contents/Info.plist"), 0);
+        assert_eq!(
+            bits(&filter, "/Applications/Safari.app/Contents/Info.plist"),
+            0
+        );
     }
 
     #[test]
     fn watch_filter_scopes_real_changes_to_their_source() {
         let filter = watch_filter();
-        assert_eq!(bits(&filter, "/Users/me/Code/a/b/c/notes.md"), super::SCOPE_FILES);
+        assert_eq!(
+            bits(&filter, "/Users/me/Code/a/b/c/notes.md"),
+            super::SCOPE_FILES
+        );
         assert_eq!(bits(&filter, "/Applications/Foo.app"), super::SCOPE_APPS);
-        assert_eq!(bits(&filter, "/Applications/Utilities/Foo.app"), super::SCOPE_APPS);
+        assert_eq!(
+            bits(&filter, "/Applications/Utilities/Foo.app"),
+            super::SCOPE_APPS
+        );
         assert_eq!(bits(&filter, "/Applications/Games"), super::SCOPE_APPS);
         // Beyond app_scan_depth.
         assert_eq!(bits(&filter, "/Applications/a/b/c/Foo.app"), 0);

@@ -1,33 +1,9 @@
 //! Launch modes: the names a command line or a URL uses to open Lumio already in
-//! a particular mode (`lumio clipboard`).
+//! a particular mode (`lumio files`).
 //!
 //! One rule for every row: the query is `prefix` followed by the term. Adding a
 //! mode is adding a row; a shell that needs a `match` over mode names has
 //! bypassed this table.
-
-/// A field rather than a `#[cfg]` so `--list-modes` can say "macOS only"
-/// instead of pretending the mode does not exist.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Platforms {
-    All,
-    MacOnly,
-}
-
-impl Platforms {
-    pub fn note(self) -> Option<&'static str> {
-        match self {
-            Platforms::All => None,
-            Platforms::MacOnly => Some("macOS only"),
-        }
-    }
-
-    pub fn available_here(self) -> bool {
-        match self {
-            Platforms::All => true,
-            Platforms::MacOnly => cfg!(target_os = "macos"),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Mode {
@@ -35,7 +11,6 @@ pub struct Mode {
     pub aliases: &'static [&'static str],
     /// Text placed in the input. A term is appended to it verbatim.
     pub prefix: &'static str,
-    pub platforms: Platforms,
     /// One line, for `--list-modes`.
     pub about: &'static str,
 }
@@ -50,66 +25,39 @@ impl Mode {
 /// jump's trigger, not padding.
 pub const MODES: &[Mode] = &[
     Mode {
-        name: "clipboard",
-        aliases: &["clip", "cb"],
-        prefix: "c\"",
-        platforms: Platforms::All,
-        about: "clipboard history",
-    },
-    Mode {
-        name: "clipboard-image",
-        aliases: &["clipimg", "ci"],
-        prefix: "ci\"",
-        platforms: Platforms::All,
-        about: "copied images",
-    },
-    Mode {
         name: "apps",
         aliases: &["app"],
         prefix: "a\"",
-        platforms: Platforms::All,
         about: "applications only",
     },
     Mode {
         name: "files",
         aliases: &["file"],
         prefix: "f\"",
-        platforms: Platforms::All,
         about: "files only",
     },
     Mode {
         name: "folders",
         aliases: &["folder", "dirs"],
         prefix: "d\"",
-        platforms: Platforms::All,
         about: "folders only",
     },
     Mode {
         name: "processes",
         aliases: &["ps"],
         prefix: "ps\"",
-        platforms: Platforms::All,
         about: "find and kill running processes",
-    },
-    Mode {
-        name: "dictionary",
-        aliases: &["dict"],
-        prefix: "tw\"",
-        platforms: Platforms::MacOnly,
-        about: "dictionary lookup",
     },
     Mode {
         name: "speed",
         aliases: &[],
         prefix: ":speed ",
-        platforms: Platforms::All,
         about: "network speed test",
     },
     Mode {
         name: "kill",
         aliases: &[],
         prefix: ":kill ",
-        platforms: Platforms::All,
         about: "running processes",
     },
 ];
@@ -152,15 +100,7 @@ pub fn list_text() -> String {
         } else {
             format!(" ({})", mode.aliases.join(", "))
         };
-        let note = mode
-            .platforms
-            .note()
-            .map(|note| format!(" [{note}]"))
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "{:<width$}  {}{aliases}{note}\n",
-            mode.name, mode.about
-        ));
+        out.push_str(&format!("{:<width$}  {}{aliases}\n", mode.name, mode.about));
     }
     out
 }
@@ -175,18 +115,14 @@ pub fn list_json() -> String {
                 "aliases": mode.aliases,
                 "prefix": mode.prefix,
                 "about": mode.about,
-                "platforms": match mode.platforms {
-                    Platforms::All => "all",
-                    Platforms::MacOnly => "macos",
-                },
+                "platforms": "all",
             })
         })
         .collect();
     serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// What a command line asked for. Parsed in core so `clipboard` cannot mean one
-/// thing on Linux and another on macOS.
+/// A launch request parsed from the command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Launch {
     /// Open as today. Unrecognised arguments land here, which is what keeps
@@ -199,8 +135,6 @@ pub enum Launch {
     /// Named a mode and got it wrong. An error because they were specific,
     /// unlike a bare word that just means "open".
     UnknownMode(String),
-    /// A real mode this platform does not have.
-    UnavailableMode(String),
 }
 
 /// Arguments after the program name. Precedence: a bare mode name, then
@@ -220,7 +154,9 @@ where
     if let Some(first) = args.first()
         && let Some(mode) = resolve(first)
     {
-        return launch(mode, first, &args[1..]);
+        return Launch::Query {
+            text: mode.query(&args[1..].join(" ")),
+        };
     }
 
     // `--` ends the options, for a term that starts with a hyphen.
@@ -269,7 +205,9 @@ where
 
     if let Some(name) = mode_name {
         return match resolve(&name) {
-            Some(mode) => launch(mode, &name, &positionals),
+            Some(mode) => Launch::Query {
+                text: mode.query(&positionals.join(" ")),
+            },
             None => Launch::UnknownMode(name),
         };
     }
@@ -281,55 +219,34 @@ where
     Launch::Normal
 }
 
-/// A resolved mode only opens where it exists.
-fn launch(mode: &Mode, name: &str, term: &[String]) -> Launch {
-    if !mode.platforms.available_here() {
-        return Launch::UnavailableMode(name.to_string());
-    }
-    Launch::Query {
-        text: mode.query(&term.join(" ")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_mode_resolves_by_name_and_by_alias() {
-        assert_eq!(resolve("clipboard").unwrap().name, "clipboard");
-        assert_eq!(resolve("clip").unwrap().name, "clipboard");
-        assert_eq!(resolve("cb").unwrap().name, "clipboard");
-    }
-
-    /// The two lists cannot mix, so neither can the names that open them.
-    #[test]
-    fn copied_images_resolve_to_their_own_mode() {
-        assert_eq!(resolve("clipboard-image").unwrap().name, "clipboard-image");
-        assert_eq!(resolve("clipimg").unwrap().name, "clipboard-image");
-        assert_eq!(resolve("ci").unwrap().name, "clipboard-image");
-        assert_eq!(resolve("ci").unwrap().query("logo"), "ci\"logo");
-        assert_eq!(resolve("clip").unwrap().name, "clipboard");
+        assert_eq!(resolve("files").unwrap().name, "files");
+        assert_eq!(resolve("file").unwrap().name, "files");
     }
 
     #[test]
     fn resolution_ignores_case_and_surrounding_space() {
-        assert_eq!(resolve("Clipboard").unwrap().name, "clipboard");
-        assert_eq!(resolve("  CLIP  ").unwrap().name, "clipboard");
+        assert_eq!(resolve("Files").unwrap().name, "files");
+        assert_eq!(resolve("  FILE  ").unwrap().name, "files");
     }
 
     #[test]
     fn an_unknown_name_resolves_to_nothing_rather_than_guessing() {
-        assert!(resolve("clipbaord").is_none());
+        assert!(resolve("unknown").is_none());
         assert!(resolve("").is_none());
         assert!(resolve("   ").is_none());
     }
 
     #[test]
     fn a_term_is_appended_to_the_prefix() {
-        assert_eq!(resolve("clip").unwrap().query("password"), "c\"password");
+        assert_eq!(resolve("file").unwrap().query("report"), "f\"report");
         assert_eq!(resolve("kill").unwrap().query("chrome"), ":kill chrome");
-        assert_eq!(resolve("clip").unwrap().query(""), "c\"");
+        assert_eq!(resolve("file").unwrap().query(""), "f\"");
     }
 
     /// A row whose prefix is not real grammar ships as a mode that opens an
@@ -397,23 +314,23 @@ mod tests {
 
     #[test]
     fn a_bare_mode_name_opens_that_mode() {
-        assert_eq!(parse(&["clipboard"]), shown("c\""));
-        assert_eq!(parse(&["clip"]), shown("c\""));
+        assert_eq!(parse(&["files"]), shown("f\""));
+        assert_eq!(parse(&["file"]), shown("f\""));
     }
 
     #[test]
     fn a_term_rides_along_with_the_mode() {
-        assert_eq!(parse(&["clipboard", "password"]), shown("c\"password"));
+        assert_eq!(parse(&["files", "report"]), shown("f\"report"));
         assert_eq!(
-            parse(&["--mode", "clipboard", "quarterly", "report"]),
-            shown("c\"quarterly report")
+            parse(&["--mode", "files", "quarterly", "report"]),
+            shown("f\"quarterly report")
         );
     }
 
     /// Every WM autostart line in the README depends on this.
     #[test]
     fn an_unrecognised_bare_word_still_just_opens_lumio() {
-        assert_eq!(parse(&["clipbaord"]), Launch::Normal);
+        assert_eq!(parse(&["unknown"]), Launch::Normal);
         assert_eq!(parse(&[]), Launch::Normal);
         assert_eq!(parse(&["--some-future-flag"]), Launch::Normal);
     }
@@ -421,8 +338,8 @@ mod tests {
     #[test]
     fn an_explicit_unknown_mode_is_an_error() {
         assert_eq!(
-            parse(&["--mode", "clipbaord"]),
-            Launch::UnknownMode("clipbaord".to_string())
+            parse(&["--mode", "unknown"]),
+            Launch::UnknownMode("unknown".to_string())
         );
     }
 
@@ -436,7 +353,7 @@ mod tests {
 
     #[test]
     fn query_passes_grammar_through_untouched() {
-        assert_eq!(parse(&["--query", "c\"secret"]), shown("c\"secret"));
+        assert_eq!(parse(&["--query", "f\"invoice"]), shown("f\"invoice"));
         assert_eq!(parse(&["--query", ":kill chrome"]), shown(":kill chrome"));
     }
 
@@ -448,18 +365,6 @@ mod tests {
         assert_eq!(
             parse(&["--mode", "kill", "--", "chrome"]),
             shown(":kill chrome")
-        );
-    }
-
-    /// The table is the platform's own answer, so a row and its shell have to
-    /// agree.
-    #[test]
-    fn platform_columns_match_the_shells() {
-        assert_eq!(resolve("processes").unwrap().platforms, Platforms::All);
-        assert_eq!(resolve("dictionary").unwrap().platforms, Platforms::MacOnly);
-        assert_eq!(
-            resolve("clipboard-image").unwrap().platforms,
-            Platforms::All
         );
     }
 
@@ -480,35 +385,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_listing_says_where_a_mode_is_unavailable() {
-        let listing = list_text();
-        let dict_line = listing
-            .lines()
-            .find(|line| line.starts_with("dictionary "))
-            .expect("dictionary should be listed");
-
-        assert!(
-            dict_line.contains("macOS only"),
-            "a Linux user should learn the mode exists and why it is not theirs: {dict_line}"
-        );
-    }
-
     /// Locked because neither shell's crate compiles everywhere. The plugin
     /// hands over a `Vec<String>` including argv[0], hence the skip.
     #[test]
     fn the_iterator_shapes_the_shells_use_all_compile() {
-        let forwarded: Vec<String> = vec!["lumio".into(), "clipboard".into(), "pass".into()];
+        let forwarded: Vec<String> = vec!["lumio".into(), "files".into(), "pass".into()];
         assert_eq!(
             parse_args(forwarded.iter().skip(1)),
-            shown("c\"pass"),
+            shown("f\"pass"),
             "a Vec<String> argv with the program name skipped"
         );
 
-        let owned: Vec<String> = vec!["clip".into()];
-        assert_eq!(parse_args(owned.into_iter()), shown("c\""));
+        let owned: Vec<String> = vec!["file".into()];
+        assert_eq!(parse_args(owned.into_iter()), shown("f\""));
 
-        assert_eq!(parse_args(["clip"].iter().copied()), shown("c\""));
+        assert_eq!(parse_args(["file"].iter().copied()), shown("f\""));
         assert_eq!(
             parse_args(std::env::args().skip(usize::MAX)),
             Launch::Normal
