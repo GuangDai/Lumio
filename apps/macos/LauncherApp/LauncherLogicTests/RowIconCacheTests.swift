@@ -49,10 +49,20 @@ final class RowIconCacheTests: XCTestCase {
         XCTAssertEqual(rep?.colorAt(x: 32, y: 32)?.alphaComponent ?? 0, 1, accuracy: 0.01)
     }
 
-    func testAWorkspaceIconKeepsItsContent() {
-        let out = RowIconCache.rasterized(NSWorkspace.shared.icon(for: .folder), points: 32)
-        let rep = out.representations[0] as? NSBitmapImageRep
-        XCTAssertGreaterThan(rep?.colorAt(x: 32, y: 32)?.alphaComponent ?? 0, 0.5)
+    func testAnIconWithMultipleResolutionsKeepsItsContent() throws {
+        let size = NSSize(width: 32, height: 32)
+        let icon = NSImage(size: size)
+        for pixels in [32, 64] {
+            let source = solid(.blue, width: pixels, height: pixels)
+            let representation = try XCTUnwrap(source.representations.first)
+            representation.size = size
+            icon.addRepresentation(representation)
+        }
+
+        let output = RowIconCache.rasterized(icon, points: 32)
+        XCTAssertEqual(output.representations.count, 1)
+        let bitmap = try XCTUnwrap(output.representations.first as? NSBitmapImageRep)
+        XCTAssertGreaterThan(bitmap.colorAt(x: 32, y: 32)?.alphaComponent ?? 0, 0.5)
     }
 
     func testTemplateImagesAreLeftAlone() {
