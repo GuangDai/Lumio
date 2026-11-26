@@ -436,9 +436,8 @@ folder_scan_limit=8000\n\
 folder_exclude_paths=\n\
 skip_dir_names={skipped_names}\n\
 lazy_indexing_enabled=true\n\
-# Localized app and System Settings names. macOS 15.4+ only. Slows the first\n\
-# index pass (~3ms -> ~35ms on a 134-app machine) and caches bundle metadata\n\
-# for the process lifetime.\n\
+# Built-in macOS apps use Simplified Chinese titles when available. This option\n\
+# also enables localized titles for other apps and System Settings panes.\n\
 localized_app_names=false\n\
 \n\
 # How long the main query survives while Lumio is hidden, in seconds. 0 clears\n\

@@ -181,11 +181,14 @@ fn system_application_names(bundle: &NSBundle, path: &str) -> (Option<String>, V
         _ => (None, &[]),
     };
     let simplified = read_chinese_bundle_name(bundle, "zh-Hans", &["zh-Hans", "zh_CN", "zh"]);
-    let title = if matches!(name, Some("Grapher" | "QuickTime Player")) {
-        // Apple uses the original brand names on the Simplified Chinese Mac.
-        name.map(str::to_owned)
-    } else {
-        simplified.clone().or_else(|| fallback.map(str::to_owned))
+    let title = match name {
+        // These system bundles' InfoPlist names omit the spacing used by the
+        // app grid. Keep those spellings searchable below as well.
+        Some("AirPort Utility" | "Audio MIDI Setup" | "iPhone Mirroring") => {
+            fallback.map(str::to_owned)
+        }
+        Some("Grapher" | "QuickTime Player") => name.map(str::to_owned),
+        _ => simplified.clone().or_else(|| fallback.map(str::to_owned)),
     };
     let search_names = simplified
         .into_iter()
