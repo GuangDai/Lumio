@@ -33,18 +33,6 @@ struct SpotlightPreviewView: View {
     var processDetail: ProcessDetail? = nil
     var processCPU: Double? = nil
     var measuringCPU = false
-    @State private var info = Info()
-
-    /// Extra info read from disk when a row is selected.
-    struct Info {
-        var detail: String?
-        var modified: String?
-        var version: String?
-        /// "Applications › Calendar.app"
-        var location: String?
-        /// "2 years ago"
-        var modifiedAgo: String?
-    }
 
     /// Results that get the Fluent-style card: something to open, with actions.
     private var usesCard: Bool {
@@ -59,7 +47,7 @@ struct SpotlightPreviewView: View {
         }
     }
 
-    /// Fluent Search's detail card: big icon, name, facts, tag chips, then every action.
+    /// The result icon, title, context, and actions.
     private var card: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
@@ -93,32 +81,30 @@ struct SpotlightPreviewView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipped()
-        .task(id: item.id) {
-            // Off the main thread like `classic`: the top result's card is rebuilt on each
-            // keystroke, and a disk read here stalled typing.
-            let current = item
-            info = Info(detail: Self.immediateDetail(for: current))
-            let loaded = await Task.detached(priority: .userInitiated) { Self.loadInfo(for: current) }.value
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.14)) { info = loaded }
+    }
+
+    /// The address or window owner when it helps distinguish the result.
+    @ViewBuilder
+    private var cardFacts: some View {
+        if item.kind == .folder {
+            folderAddress
+        } else if let link = item.tab?.url ?? item.target.flatMap({ $0.hasPrefix("http") ? $0 : nil }) {
+            factRow("URL", link)
+        } else if item.kind == .window, let app = item.meta {
+            factRow("Window", app)
         }
     }
 
-    /// App and folder metadata, or the address and owner of another result.
     @ViewBuilder
-    private var cardFacts: some View {
-        let link = item.tab?.url ?? item.target.flatMap { $0.hasPrefix("http") ? $0 : nil }
-        if info.location != nil || info.modifiedAgo != nil || info.version != nil || link != nil
-            || item.kind == .window
-        {
-            VStack(alignment: .leading, spacing: 5) {
-                if let link { factRow("URL", link) }
-                if item.kind == .window, let app = item.meta { factRow("Window", app) }
-                if let location = info.location { factRow("Location", location) }
-                if let version = info.version { factRow("Version", version) }
-                if let modified = info.modifiedAgo { factRow("Modified", modified) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private var folderAddress: some View {
+        if item.kind == .folder, let path = item.target, path.hasPrefix("/") {
+            Text(PathDisplay.abbreviated(path))
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -141,20 +127,11 @@ struct SpotlightPreviewView: View {
             header
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            details
+            folderAddress
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
-        .task(id: item.id) {
-            // Disk reads (attributes, Info.plist) stay off the main thread: arrowing through
-            // results must never wait on a slow volume.
-            let current = item
-            info = Info(detail: Self.immediateDetail(for: current))
-            let loaded = await Task.detached(priority: .userInitiated) { Self.loadInfo(for: current) }.value
-            guard !Task.isCancelled else { return }
-            info = loaded
-        }
     }
 
     // MARK: - Quick actions
@@ -192,7 +169,7 @@ struct SpotlightPreviewView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1.5)
                         .background(Color(nsColor: .systemBlue), in: Capsule())
-                    if let detail = info.detail {
+                    if let detail = headerDetail {
                         Text(detail)
                             .font(.system(size: 12.5))
                             .foregroundStyle(.secondary)
@@ -201,6 +178,14 @@ struct SpotlightPreviewView: View {
                 }
             }
             Spacer(minLength: 58)
+        }
+    }
+
+    private var headerDetail: String? {
+        switch item.kind {
+        case .setting: "System Settings"
+        case .process: item.meta
+        default: nil
         }
     }
 
@@ -303,20 +288,6 @@ struct SpotlightPreviewView: View {
         .foregroundStyle(.secondary)
     }
 
-    // MARK: - Bottom details
-
-    @ViewBuilder
-    private var details: some View {
-        let path = item.target.flatMap { $0.hasPrefix("/") ? $0 : nil }
-        if path != nil || info.modified != nil || info.version != nil {
-            VStack(spacing: 7) {
-                if let version = info.version { infoRow("Version", version) }
-                if let path { infoRow("Path", PathDisplay.abbreviated(path)) }
-                if let modified = info.modified { infoRow("Modified", modified) }
-            }
-        }
-    }
-
     private func infoRow(_ label: String, _ value: String) -> some View {
         HStack(spacing: 12) {
             Text(label)
@@ -327,59 +298,6 @@ struct SpotlightPreviewView: View {
                 .truncationMode(.middle)
         }
         .font(.system(size: 12.5))
-    }
-
-    // MARK: - Disk reads
-
-    /// What the header can show before any disk read lands.
-    private static func immediateDetail(for item: SpotlightItem) -> String? {
-        switch item.kind {
-        case .setting: "System Settings"
-        case .process: item.meta
-        default: nil
-        }
-    }
-
-    nonisolated private static func loadInfo(for item: SpotlightItem) -> Info {
-        var info = Info()
-        switch item.kind {
-        case .setting:
-            info.detail = "System Settings"
-            return info
-        case .process:
-            info.detail = item.meta
-            return info
-        case .app, .folder:
-            break
-        default:
-            return info
-        }
-        guard let path = item.target, path.hasPrefix("/") else { return info }
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        if let date = attrs?[.modificationDate] as? Date {
-            info.modified = date.formatted(date: .abbreviated, time: .shortened)
-            let relative = RelativeDateTimeFormatter()
-            relative.unitsStyle = .full
-            info.modifiedAgo = relative.localizedString(for: date, relativeTo: Date())
-        }
-        info.location = Self.breadcrumb(path)
-        guard item.kind == .app else { return info }
-        // Read the plist directly to avoid retaining a cached Bundle for every app.
-        let plistURL = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
-        let plist = NSDictionary(contentsOf: plistURL)
-        info.version = plist?["CFBundleShortVersionString"] as? String
-            ?? plist?["CFBundleVersion"] as? String
-        info.detail = info.version.map { "Version \($0)" }
-        return info
-    }
-
-    /// A readable path of up to four components, relative to the home directory when possible.
-    nonisolated private static func breadcrumb(_ path: String) -> String {
-        let home = NSHomeDirectory()
-        let shown = path.hasPrefix(home + "/") ? String(path.dropFirst(home.count + 1)) : path
-        var parts = shown.split(separator: "/").map(String.init)
-        if parts.count > 4 { parts = ["…"] + parts.suffix(4) }
-        return parts.joined(separator: " › ")
     }
 }
 

@@ -102,7 +102,7 @@ Search for `settings` to find System Settings, or press `Tab` on the `settings` 
 
 ### Open a folder in Finder
 
-Search for Finder, select its application result, and press `Tab` to open its details and actions. Type a folder name, abbreviated path such as `D/T`, or full local address to switch the page to folder results. A file address resolves to its parent directory. Press `Enter` to open the selected folder in Finder, or choose **Open in Terminal**.
+Search for Finder, select its application result, and press `Tab` to open its details and actions. Type a folder name, abbreviated path such as `D/T`, or full local address to switch the page to folder results. A file address resolves to its parent directory. Add a trailing `/` to list a folder's direct subfolders. Press `Enter` to open the selected folder in Finder, or choose **Open in Terminal**.
 
 From the main search field, use `cd ~/Library` or `cd D/T` to go straight to folder results. The default folder index includes `~/Library` and hidden folders such as `~/.config`.
 

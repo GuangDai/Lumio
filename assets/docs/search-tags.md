@@ -10,6 +10,7 @@ On the Finder action page, typing switches to folder results. Each result shows 
 | --- | --- |
 | `Telegram` | Folders matching the name |
 | `Downloads/Telegram` or `D/T` | Folders at the final matching path component |
+| `D/T/` | Immediate subfolders of the matched folder |
 | `~/Library` | The local Library directory |
 | `~/.config/settings.json` | The existing file's parent directory |
 | `file:///Users/me/Documents` | The local Documents directory |

@@ -11,6 +11,7 @@ use lumio_matching::{
 };
 use lumio_ranking::rank_score;
 use std::collections::BinaryHeap;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const RERANK_POOL_MULTIPLIER: usize = 4;
@@ -101,6 +102,8 @@ impl QueryEngine {
             return Vec::new();
         }
 
+        let browse_children = query.ends_with('/');
+        let match_limit = if browse_children { 1 } else { limit };
         let mut top = BinaryHeap::new();
         for (idx, indexed) in self.candidates.iter().enumerate() {
             if indexed.candidate.kind != CandidateKind::Folder {
@@ -110,11 +113,39 @@ impl QueryEngine {
                 push_top_k(
                     &mut top,
                     ScoredMatch::new(idx as u32, score, &indexed.candidate.title),
-                    limit,
+                    match_limit,
                 );
             }
         }
 
+        let matches = finalize_top_k(top);
+        if !browse_children {
+            return matches;
+        }
+
+        let Some(parent) = matches.first() else {
+            return matches;
+        };
+        let parent = Path::new(self.candidates[parent.idx as usize].candidate.path.as_ref());
+        self.search_folder_children(parent, limit)
+    }
+
+    /// A trailing slash opens the matched folder for browsing. Compare actual
+    /// parent paths so similar or repeated path names don't mix their children.
+    fn search_folder_children(&self, parent: &Path, limit: usize) -> Vec<ScoredMatch<'_>> {
+        let mut top = BinaryHeap::new();
+        for (idx, indexed) in self.candidates.iter().enumerate() {
+            let candidate = &indexed.candidate;
+            if candidate.kind == CandidateKind::Folder
+                && Path::new(candidate.path.as_ref()).parent() == Some(parent)
+            {
+                push_top_k(
+                    &mut top,
+                    ScoredMatch::new(idx as u32, 0, &candidate.title),
+                    limit,
+                );
+            }
+        }
         finalize_top_k(top)
     }
 
@@ -424,6 +455,58 @@ mod tests {
             .map(|row| row.id)
             .collect();
         assert_eq!(ids, ["folder:exact", "folder:prefix", "folder:fuzzy"]);
+    }
+
+    #[test]
+    fn trailing_slash_browses_only_the_matched_folders_immediate_children() {
+        let folder = |id, name, path| Candidate::new(id, CandidateKind::Folder, name, path);
+        let engine = QueryEngine::new(vec![
+            folder("downloads", "Downloads", "/home/me/Downloads"),
+            folder("telegrams", "Telegrams", "/home/me/Downloads/Telegrams"),
+            folder("images", "Images", "/home/me/Downloads/Telegrams/Images"),
+            folder(
+                "archive",
+                ".archive",
+                "/home/me/Downloads/Telegrams/.archive",
+            ),
+            folder("nested", "2026", "/home/me/Downloads/Telegrams/Images/2026"),
+            folder(
+                "similar",
+                "Telegrams Old",
+                "/home/me/Downloads/Telegrams/Downloads/Telegrams Old",
+            ),
+            folder(
+                "unrelated",
+                "Unrelated",
+                "/home/me/Downloads/Telegrams/Downloads/Telegrams Old/Unrelated",
+            ),
+            Candidate::new(
+                "app:tool",
+                CandidateKind::App,
+                "Tool",
+                "/home/me/Downloads/Telegrams/Tool.app",
+            ),
+        ]);
+        let ids = |query| {
+            engine
+                .search(query, 20)
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+
+        let matched_folders = ids("D/T");
+        assert_eq!(matched_folders[0], "telegrams");
+        assert!(!matched_folders.iter().any(|id| id == "images"));
+        for query in ["D/T/", "d\"D/T/", "Downloads/Telegrams/"] {
+            assert_eq!(ids(query), ["archive", "images"], "{query}");
+        }
+        assert_eq!(ids("Downloads/"), ["telegrams"]);
+        assert_eq!(ids("D/T/I/"), ["nested"]);
+        assert!(ids("D/T/I/2026/").is_empty());
+        assert!(ids("D/No Such Directory/").is_empty());
+        assert!(ids("/home/me/Downloads/").is_empty());
+        assert!(ids("~/Downloads/").is_empty());
     }
 
     #[test]

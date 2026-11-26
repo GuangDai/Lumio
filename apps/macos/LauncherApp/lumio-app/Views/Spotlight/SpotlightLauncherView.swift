@@ -30,6 +30,8 @@ struct SpotlightLauncherView: View {
     @State private var query = ""
     /// The text the rows on screen were found for (set with them in `publish`).
     @State private var shownQuery = ""
+    /// The folder selected when a slash was appended to the visible query.
+    @State private var folderToExpand: String?
     /// Results currently shown. When the panel collapses, keep the old list so it fades
     /// out with the panel instead of vanishing first.
     /// `all` + `filter` and what the body derives from them, computed once per change
@@ -250,7 +252,13 @@ struct SpotlightLauncherView: View {
         .onChange(of: idle) { _, isIdle in
             if !isIdle { quickFocus = nil }
         }
-        .onChange(of: query) {
+        .onChange(of: query) { previous, next in
+            if shownQuery == previous, next == previous + "/",
+               results.indices.contains(sel), results[sel].kind == .folder {
+                folderToExpand = results[sel].target
+            } else {
+                folderToExpand = nil
+            }
             quickFocus = nil
             sel = 0
             filter = nil
@@ -259,11 +267,15 @@ struct SpotlightLauncherView: View {
             refresh()
         }
         // Entering / leaving actions (⌘K) or a search tag (⇥ / ⌫) re-runs the search.
-        .onChange(of: chipKey) { refresh() }
+        .onChange(of: chipKey) {
+            folderToExpand = nil
+            refresh()
+        }
         .onChange(of: themeStore.excludedFolderPaths) {
             if isOpen, !dismissing { refresh() }
         }
         .onChange(of: browse) {
+            folderToExpand = nil
             sel = 0
             filter = nil
             refresh()
@@ -876,10 +888,12 @@ struct SpotlightLauncherView: View {
         let term = request.term
         let allowsFolders = request.browse == nil || request.browse == .folder
         let excludedFolders = themeStore.excludedFolderPaths
-        if allowsFolders, FolderAddressQuery.isLiteralAddress(term) {
+        let literalAddress = allowsFolders && FolderAddressQuery.isLiteralAddress(term)
+        if literalAddress, !FolderAddressQuery.requestsChildren(in: term) {
             publish(SpotlightBackend.directFolder(for: term, excluding: excludedFolders).map { [$0] } ?? [])
             return
         }
+        let selectedFolder = folderToExpand
         // First keystroke searches immediately; further typing waits a short beat.
         let debounce: Duration = expanded ? SpotlightBackend.debounce : .zero
         searchTask = Task { @MainActor in
@@ -889,9 +903,16 @@ struct SpotlightLauncherView: View {
             }
             // Explicit web addresses stay directly openable; other slash-separated input
             // goes unchanged to the directory matcher.
-            let relativePath = allowsFolders && term.contains("/") && !term.hasPrefix(">")
+            let relativePath = allowsFolders && !literalAddress && term.contains("/") && !term.hasPrefix(">")
                 && !term.lowercased().hasPrefix(AppConstants.Launcher.QueryPrefix.apps)
                 && (request.browse == .folder || EngineBridge.shared.classifyURL(query: term) == nil)
+            if literalAddress || (relativePath && term.hasSuffix("/")) {
+                let children = await SpotlightBackend.childFolders(for: term, excluding: excludedFolders, selectedFolder: selectedFolder)
+                guard !Task.isCancelled else { return }
+                searchTask = nil
+                publish(children)
+                return
+            }
             let coreRequest = relativePath ? SpotlightRequest(text: term, browse: .folder) : request
             let engineQuery = SpotlightBackend.engineQuery(for: coreRequest)
             let wantsBrowserRows = coreRequest.isUnscoped && term.count >= 2
@@ -979,6 +1000,7 @@ struct SpotlightLauncherView: View {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let debounce: Duration = expanded ? SpotlightBackend.debounce : .zero
         let excludedFolders = themeStore.excludedFolderPaths
+        let selectedFolder = folderToExpand
         searchTask = Task { @MainActor in
             if debounce > .zero {
                 try? await Task.sleep(for: debounce)
@@ -986,8 +1008,14 @@ struct SpotlightLauncherView: View {
             }
             if let folderScope = tag.folders {
                 let rows: [SpotlightItem]
-                if FolderAddressQuery.isLiteralAddress(term) {
+                if FolderAddressQuery.requestsChildren(in: term) {
+                    rows = await SpotlightBackend.childFolders(for: term, excluding: excludedFolders)
+                } else if FolderAddressQuery.isLiteralAddress(term) {
                     rows = SpotlightBackend.directFolder(for: term, excluding: excludedFolders).map { [$0] } ?? []
+                } else if term.hasSuffix("/") {
+                    rows = await SpotlightBackend.childFolders(
+                        for: term, excluding: excludedFolders, within: folderScope.folders, selectedFolder: selectedFolder
+                    )
                 } else if term.contains("/") {
                     let request = SpotlightRequest(text: term, browse: .folder)
                     let engineQuery = SpotlightBackend.engineQuery(for: request)

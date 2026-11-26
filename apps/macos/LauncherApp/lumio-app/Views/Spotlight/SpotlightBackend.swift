@@ -366,6 +366,46 @@ enum SpotlightBackend {
         return folderRow(path: folder.path, name: FileManager.default.displayName(atPath: folder.path))
     }
 
+    /// A trailing slash browses the live contents of one folder, including children beyond the index depth.
+    static func childFolders(
+        for term: String, excluding: [String], within roots: [String] = [], selectedFolder: String? = nil
+    ) async -> [SpotlightItem] {
+        let parentQuery = AppConstants.Launcher.QueryPrefix.folders + String(term.dropLast())
+        let hits = await SpotlightQueue.run(skipped: [FolderHit]()) { isCancelled in
+            let including: (URL) -> Bool = { folder in
+                (roots.isEmpty || FileSearchPaths.isExcluded(folder.path, by: roots))
+                    && Self.isBrowsableFolder(at: folder, excluding: excluding)
+            }
+            let address: String
+            if FolderAddressQuery.requestsChildren(in: term) {
+                address = term
+            } else {
+                guard !isCancelled() else { return [] }
+                let parent: String
+                if let selectedFolder, selectedFolder.hasPrefix("/"), including(URL(fileURLWithPath: selectedFolder)) {
+                    parent = selectedFolder
+                } else {
+                    guard let match = EngineBridge.shared.search(query: parentQuery, limit: Self.resultLimit).first(where: { row in
+                        row.kind == .folder && row.path.hasPrefix("/") && including(URL(fileURLWithPath: row.path))
+                    }) else { return [] }
+                    parent = match.path
+                }
+                address = parent.hasSuffix("/") ? parent : parent + "/"
+            }
+
+            let children = FolderAddressQuery.immediateSubfolders(in: address, including: including, isCancelled: isCancelled)
+            guard !isCancelled() else { return [] }
+            let rows = children.map { folder in
+                FolderHit(path: folder.path, name: FileManager.default.displayName(atPath: folder.path), date: nil)
+            }
+            return Array(rows.sorted { first, second in
+                let order = first.name.localizedStandardCompare(second.name)
+                return order == .orderedSame ? first.path < second.path : order == .orderedAscending
+            }.prefix(Self.resultLimit))
+        }
+        return hits.map { folderRow(path: $0.path, name: $0.name) }
+    }
+
     nonisolated static func isBrowsableFolder(at typed: URL, excluding: [String] = []) -> Bool {
         guard typed.isFileURL, typed.path.hasPrefix("/") else { return false }
         let normalized = typed.standardizedFileURL
