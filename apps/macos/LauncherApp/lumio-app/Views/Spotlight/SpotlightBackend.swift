@@ -364,6 +364,7 @@ enum SpotlightBackend {
     ) async -> [SpotlightItem] {
         let literalAddress = FolderAddressQuery.isLiteralAddress(term)
         let browsing = !literalAddress || FolderAddressQuery.requestsChildren(in: term)
+        let parentQuery = AppConstants.Launcher.QueryPrefix.folders + String(term.dropLast())
         let selected = selectedFolder.flatMap { path in
             path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
         }
@@ -383,7 +384,6 @@ enum SpotlightBackend {
                 if let selected, including(selected) {
                     parent = selected.path
                 } else {
-                    let parentQuery = AppConstants.Launcher.QueryPrefix.folders + String(term.dropLast())
                     guard let match = EngineBridge.shared.search(query: parentQuery, limit: Self.resultLimit).first(where: { row in
                         row.kind == .folder && row.path.hasPrefix("/") && including(URL(fileURLWithPath: row.path))
                     }) else { return [] }
